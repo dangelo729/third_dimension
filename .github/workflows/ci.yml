@@ -1,0 +1,84 @@
+# continuous integration: host test suite, example-compile matrix across the
+# three supported cores, and strict manifest lint.
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  host-tests:
+    # builds the core plus the host harness with plain clang++ — this job is
+    # also the continuous proof that src/ has zero Arduino dependencies.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build host tests
+        # -ffp-contract=off: the bit-exact golden hashes are pinned without
+        # FMA contraction; contracted builds legitimately differ.
+        run: |
+          clang++ -std=c++17 -O1 -Wall -Wextra -Werror -ffp-contract=off \
+            -Isrc src/*.cpp src/internal/*.cpp test/host/*.cpp \
+            -o test/host/td_host_tests
+      - name: Run host tests
+        run: ./test/host/td_host_tests
+
+  compile-examples:
+    # compiles every sketch under examples/ for each supported core. the GFX
+    # stack is installed here for the GFX examples — the host-tests job is
+    # the zero-dependency guard, so installing GFX in CI is correct.
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        board:
+          - fqbn: teensy:avr:teensy41
+            platforms: |
+              - name: teensy:avr
+                source-url: https://www.pjrc.com/teensy/package_teensy_index.json
+          - fqbn: esp32:esp32:esp32
+            platforms: |
+              - name: esp32:esp32
+                source-url: https://espressif.github.io/arduino-esp32/package_esp32_index.json
+          - fqbn: rp2040:rp2040:rpipico2
+            platforms: |
+              - name: rp2040:rp2040
+                source-url: https://github.com/earlephilhower/arduino-pico/releases/download/global/package_rp2040_index.json
+    steps:
+      - uses: actions/checkout@v4
+      - uses: arduino/compile-sketches@v1
+        with:
+          fqbn: ${{ matrix.board.fqbn }}
+          platforms: ${{ matrix.board.platforms }}
+          libraries: |
+            - source-path: ./
+            - name: Adafruit GFX Library
+            - name: Adafruit BusIO
+            - name: Adafruit SSD1306
+            - name: Adafruit SSD1331 OLED Driver Library for Arduino
+          sketch-paths: |
+            - examples
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: arduino/arduino-lint-action@v2
+        with:
+          project-type: library
+          compliance: strict
+      - name: keywords.txt uses real tabs
+        # the IDE only colors keywords whose columns are separated by a
+        # literal tab; space-separated lines fail silently.
+        run: |
+          ! grep -nP '^\S.* +(KEYWORD1|KEYWORD2|LITERAL1)\s*$' keywords.txt
+          grep -qP '\tKEYWORD1' keywords.txt
+      - name: manifest versions match
+        run: |
+          prop_ver="$(sed -n 's/^version=//p' library.properties)"
+          test -n "$prop_ver"
+          grep -Fq "\"version\": \"${prop_ver}\"" library.json
