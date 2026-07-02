@@ -21,6 +21,7 @@ test/host/td_host_tests
 scratch/
 scratch-*/
 
-# Plan documents: local working notes, never committed
+# Plan documents and AI-assistant config: local working notes, never committed
 PLAN.md
 *PLAN*.md
+CLAUDE.md
