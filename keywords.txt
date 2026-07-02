@@ -1,0 +1,173 @@
+#######################################
+# Syntax coloring map for ThirdDimension
+# Columns are separated by a single real tab.
+#######################################
+
+#######################################
+# Datatypes (KEYWORD1)
+#######################################
+
+TD_Scene	KEYWORD1
+TD_Object	KEYWORD1
+TD_Camera	KEYWORD1
+TD_Light	KEYWORD1
+TD_Renderer	KEYWORD1
+TD_RenderTarget	KEYWORD1
+TD_MonoTarget	KEYWORD1
+TD_Color565Target	KEYWORD1
+TD_GFXMonoTarget	KEYWORD1
+TD_GFX565Target	KEYWORD1
+TD_Mesh	KEYWORD1
+TD_FaceAttr	KEYWORD1
+TD_MaterialCtx	KEYWORD1
+TD_Vec3	KEYWORD1
+TD_Mat3	KEYWORD1
+TD_Xform	KEYWORD1
+TD_RenderMode	KEYWORD1
+TD_Dither	KEYWORD1
+TD_DitherSpec	KEYWORD1
+TD_Material	KEYWORD1
+TD_Status	KEYWORD1
+TD_BoxMesh	KEYWORD1
+TD_SphereMesh	KEYWORD1
+TD_CylinderMesh	KEYWORD1
+TD_ConeMesh	KEYWORD1
+TD_PrismMesh	KEYWORD1
+TD_TorusMesh	KEYWORD1
+TD_PlaneMesh	KEYWORD1
+
+#######################################
+# Methods and functions (KEYWORD2)
+#######################################
+
+render	KEYWORD2
+renderPass	KEYWORD2
+add	KEYWORD2
+remove	KEYWORD2
+setPosition	KEYWORD2
+setRotation	KEYWORD2
+setScale	KEYWORD2
+setColor	KEYWORD2
+setMaterial	KEYWORD2
+setVisible	KEYWORD2
+setAmbient	KEYWORD2
+ambient	KEYWORD2
+setRenderMode	KEYWORD2
+renderMode	KEYWORD2
+setMode	KEYWORD2
+lastStatus	KEYWORD2
+lastDrawCount	KEYWORD2
+lastNearSkipCount	KEYWORD2
+renderer	KEYWORD2
+firstObject	KEYWORD2
+setDither	KEYWORD2
+dither	KEYWORD2
+ditherName	KEYWORD2
+setAutoClear	KEYWORD2
+setBackground	KEYWORD2
+setMatColors	KEYWORD2
+clear	KEYWORD2
+setOrbit	KEYWORD2
+setDistance	KEYWORD2
+setTarget	KEYWORD2
+lookAt	KEYWORD2
+fitScene	KEYWORD2
+fitRadius	KEYWORD2
+refit	KEYWORD2
+setFov	KEYWORD2
+setFocalPixels	KEYWORD2
+setCenterPixels	KEYWORD2
+setNearSkip	KEYWORD2
+resolve	KEYWORD2
+worldToView	KEYWORD2
+focalForFovY	KEYWORD2
+focalForFit	KEYWORD2
+focalPixels	KEYWORD2
+nearSkip	KEYWORD2
+centerX	KEYWORD2
+centerY	KEYWORD2
+right	KEYWORD2
+up	KEYWORD2
+forward	KEYWORD2
+eye	KEYWORD2
+setDirection	KEYWORD2
+setDirectionVector	KEYWORD2
+setHeadlight	KEYWORD2
+setIntensity	KEYWORD2
+direction	KEYWORD2
+intensity	KEYWORD2
+setCullSign	KEYWORD2
+reserve	KEYWORD2
+releaseBuffers	KEYWORD2
+plotShade	KEYWORD2
+plotShadeSpan	KEYWORD2
+beginFrame	KEYWORD2
+endFrame	KEYWORD2
+valid	KEYWORD2
+rotX	KEYWORD2
+rotY	KEYWORD2
+rotZ	KEYWORD2
+scale	KEYWORD2
+color	KEYWORD2
+material	KEYWORD2
+visible	KEYWORD2
+mesh	KEYWORD2
+td_color565	KEYWORD2
+td_validateMesh	KEYWORD2
+td_meshBoundRadius	KEYWORD2
+td_ditherOn	KEYWORD2
+td_ditherName	KEYWORD2
+td_ditherIsDiffusion	KEYWORD2
+tdVec3	KEYWORD2
+tdAdd	KEYWORD2
+tdSub	KEYWORD2
+tdScale	KEYWORD2
+tdDot	KEYWORD2
+tdCross	KEYWORD2
+tdLength	KEYWORD2
+tdNormalize	KEYWORD2
+tdMat3Identity	KEYWORD2
+tdMat3RotX	KEYWORD2
+tdMat3RotY	KEYWORD2
+tdMat3RotZ	KEYWORD2
+tdMat3Mul	KEYWORD2
+tdMat3MulVec	KEYWORD2
+tdMat3Transpose	KEYWORD2
+tdMat3ScaleUniform	KEYWORD2
+tdEulerXYZ	KEYWORD2
+tdXformCompose	KEYWORD2
+tdXformPoint	KEYWORD2
+tdXformDir	KEYWORD2
+tdXformFromPRS	KEYWORD2
+
+#######################################
+# Constants (LITERAL1)
+#######################################
+
+TD_SHADED	LITERAL1
+TD_SOLID	LITERAL1
+TD_WIREFRAME	LITERAL1
+TD_RENDER_MODE_COUNT	LITERAL1
+TD_DITHER_BAYER8	LITERAL1
+TD_DITHER_BAYER4	LITERAL1
+TD_DITHER_BAYER2	LITERAL1
+TD_DITHER_BLUE16	LITERAL1
+TD_DITHER_CLUSTER8	LITERAL1
+TD_DITHER_IGN	LITERAL1
+TD_DITHER_SCANLINE	LITERAL1
+TD_DITHER_MONO	LITERAL1
+TD_DITHER_FLOYD	LITERAL1
+TD_DITHER_ATKINSON	LITERAL1
+TD_DITHER_COUNT	LITERAL1
+TD_DITHER_SPECS	LITERAL1
+TD_MATERIAL_LIT	LITERAL1
+TD_MATERIAL_BLACK	LITERAL1
+TD_MATERIAL_WHITE	LITERAL1
+TD_OK	LITERAL1
+TD_ERR_NO_TARGET	LITERAL1
+TD_ERR_ALLOC	LITERAL1
+TD_ERR_BAD_CAMERA	LITERAL1
+TD_ERR_UNSUPPORTED	LITERAL1
+TD_NO_HOST	LITERAL1
+TD_MESH_FORMAT	LITERAL1
+TD_PROGMEM	LITERAL1

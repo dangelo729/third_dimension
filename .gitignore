@@ -1,0 +1,26 @@
+# Build outputs
+*.o
+*.a
+*.d
+*.elf
+*.hex
+*.bin
+build/
+
+# Host test binary
+test/host/td_host_tests
+*.dSYM/
+
+# PlatformIO
+.pio/
+
+# OS / editor litter
+.DS_Store
+
+# Local scratch areas
+scratch/
+scratch-*/
+
+# Plan documents: local working notes, never committed
+PLAN.md
+*PLAN*.md

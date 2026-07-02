@@ -1,0 +1,45 @@
+{
+  "name": "ThirdDimension",
+  "version": "0.1.0",
+  "description": "Tiny scene-based 3D renderer for 32-bit microcontrollers, in the spirit of Adafruit GFX. Scene, orbit/auto-fit camera, directional light, OBJ-converted meshes or procedural primitives, painter-sorted Gouraud shading, and ten switchable 1-bit dither methods. Requires hardware float; not for AVR.",
+  "keywords": [
+    "3d",
+    "graphics",
+    "renderer",
+    "display",
+    "oled",
+    "tft",
+    "dithering",
+    "mesh",
+    "gouraud",
+    "wireframe"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/GITHUB_USER/ThirdDimension.git"
+  },
+  "authors": [
+    {
+      "name": "Peter D'Angelo",
+      "email": "peterdangelo729@gmail.com",
+      "maintainer": true
+    }
+  ],
+  "license": "MIT",
+  "frameworks": "*",
+  "platforms": "*",
+  "headers": "ThirdDimension.h",
+  "export": {
+    "exclude": [
+      "test",
+      "tools",
+      "extras",
+      ".github",
+      ".gitignore",
+      "CHANGELOG.md"
+    ]
+  },
+  "build": {
+    "srcDir": "src"
+  }
+}
