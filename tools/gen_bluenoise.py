@@ -1,0 +1,164 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+"""gen_bluenoise.py — blue-noise threshold matrix via void-and-cluster.
+
+Implements Ulichney 1993: iteratively remove dots from the tightest cluster /
+insert dots into the largest void under a toroidal Gaussian energy (sigma=1.5),
+ranking every pixel. Emits a C header of ranks 0..N*N-1 (uint8, row-major);
+the dither core compares shade*256 > rank (see td_ditherOn in
+src/TD_Dither.cpp).
+
+Deterministic by design (fixed seed, fixed tie-breaking): the committed
+src/internal/td_bluenoise16.h must match a fresh run bit-for-bit. Stdlib only.
+
+    python3 tools/gen_bluenoise.py            # writes src/internal/td_bluenoise16.h
+    python3 tools/gen_bluenoise.py -o path.h  # writes elsewhere
+
+Note: on a torus the zero-pattern energy is a constant minus the one-pattern
+energy, so Ulichney's phase 3 ("tightest cluster of 0s") selects the same
+pixel as phase 2's "largest void" — one insertion loop covers ranks n0..N*N-1.
+"""
+import argparse
+import math
+import random
+
+SEED = 0x600DD17  # fixed: regenerating must reproduce the committed header
+SIGMA = 1.5       # toroidal Gaussian energy sigma (pixels)
+INITIAL_FILL = 0.10  # initial binary pattern density (must be < 0.5)
+
+DEFAULT_OUT = "src/internal/td_bluenoise16.h"
+
+
+def gaussian_kernel(n, sigma):
+    """k[dy][dx] = exp(-d^2 / 2 sigma^2) with toroidal (wrap-around) distance."""
+    k = [[0.0] * n for _ in range(n)]
+    for dy in range(n):
+        wy = min(dy, n - dy)
+        for dx in range(n):
+            wx = min(dx, n - dx)
+            k[dy][dx] = math.exp(-(wx * wx + wy * wy) / (2.0 * sigma * sigma))
+    return k
+
+
+class Field:
+    """Binary pattern + incrementally-maintained Gaussian energy per pixel."""
+
+    def __init__(self, n, sigma):
+        self.n = n
+        self.kernel = gaussian_kernel(n, sigma)
+        self.energy = [0.0] * (n * n)
+        self.on = [False] * (n * n)
+
+    def toggle(self, p, add):
+        n = self.n
+        px, py = p % n, p // n
+        s = 1.0 if add else -1.0
+        for y in range(n):
+            krow = self.kernel[(y - py) % n]
+            base = y * n
+            for x in range(n):
+                self.energy[base + x] += s * krow[(x - px) % n]
+        self.on[p] = add
+
+    def tightest_cluster(self):
+        """ON pixel with the highest energy; ties broken to the lowest index."""
+        best, bi = -1.0, -1
+        for i in range(self.n * self.n):
+            if self.on[i] and self.energy[i] > best:
+                best, bi = self.energy[i], i
+        return bi
+
+    def largest_void(self):
+        """OFF pixel with the lowest energy; ties broken to the lowest index."""
+        best, bi = math.inf, -1
+        for i in range(self.n * self.n):
+            if not self.on[i] and self.energy[i] < best:
+                best, bi = self.energy[i], i
+        return bi
+
+
+def generate(n):
+    total = n * n
+    n0 = max(1, int(total * INITIAL_FILL))
+    field = Field(n, SIGMA)
+
+    # --- initial binary pattern: random fill, then relax to a prototype ---
+    rng = random.Random(SEED)
+    cells = list(range(total))
+    rng.shuffle(cells)
+    for p in cells[:n0]:
+        field.toggle(p, True)
+    for _ in range(10 * total):  # converges in far fewer; cap keeps it total
+        c = field.tightest_cluster()
+        field.toggle(c, False)
+        v = field.largest_void()
+        field.toggle(v, True)
+        if v == c:  # removing the tightest cluster re-creates the largest void
+            break
+
+    rank = [None] * total
+
+    # --- phase 1: shrink a copy of the prototype, ranking n0-1 .. 0 ---
+    removed = []
+    for r in range(n0 - 1, -1, -1):
+        c = field.tightest_cluster()
+        field.toggle(c, False)
+        rank[c] = r
+        removed.append(c)
+    for c in reversed(removed):  # restore the prototype
+        field.toggle(c, True)
+
+    # --- phases 2+3: grow the prototype, ranking n0 .. total-1 (see header) ---
+    for r in range(n0, total):
+        v = field.largest_void()
+        field.toggle(v, True)
+        rank[v] = r
+
+    assert sorted(rank) == list(range(total)), "ranks must be a permutation"
+    return rank
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap.add_argument("-o", "--out", default=DEFAULT_OUT,
+                    help=f"output .h path (default: {DEFAULT_OUT})")
+    ap.add_argument("-n", "--size", type=int, default=16,
+                    help="matrix side, power of two (default: 16)")
+    ap.add_argument("--name", default=None,
+                    help="C identifier (default: BLUENOISE<size>)")
+    args = ap.parse_args()
+    n = args.size
+    if n < 2 or (n & (n - 1)) or n * n > 256:
+        raise SystemExit("size must be a power of two with size^2 <= 256 (uint8 ranks)")
+    name = args.name or f"BLUENOISE{n}"
+
+    rank = generate(n)
+
+    guard = f"TD_INTERNAL_{name}_H"
+    lines = []
+    lines.append("// SPDX-License-Identifier: MIT")
+    lines.append(f"// generated by tools/gen_bluenoise.py (void-and-cluster, {n}x{n},"
+                 f" sigma={SIGMA}, seed=0x{SEED:X}) — do not edit.")
+    lines.append(f"// ranks 0..{n * n - 1}, row-major, toroidal blue noise; the engine")
+    lines.append("// lights a pixel iff shade*256 > rank (see td_ditherOn, TD_Dither.cpp).")
+    lines.append(f"#ifndef {guard}")
+    lines.append(f"#define {guard}")
+    lines.append("")
+    lines.append("#include <stdint.h>")
+    lines.append("")
+    lines.append(f"static const uint8_t {name}[{n * n}] = {{")
+    for y in range(n):
+        row = rank[y * n:(y + 1) * n]
+        lines.append("  " + ", ".join(f"{v:3d}" for v in row) + ",")
+    lines.append("};")
+    lines.append("")
+    lines.append(f"#endif  // {guard}")
+    lines.append("")
+
+    with open(args.out, "w", encoding="utf-8") as fp:
+        fp.write("\n".join(lines))
+    print(f"wrote {args.out} ({n}x{n}, seed 0x{SEED:X})")
+
+
+if __name__ == "__main__":
+    main()
