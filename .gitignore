@@ -1,4 +1,4 @@
-# Build outputs
+# build outputs
 *.o
 *.a
 *.d
@@ -7,7 +7,7 @@
 *.bin
 build/
 
-# Host test binary
+# host test binary
 test/host/td_host_tests
 *.dSYM/
 
@@ -17,11 +17,11 @@ test/host/td_host_tests
 # OS / editor litter
 .DS_Store
 
-# Local scratch areas
+# local scratch areas
 scratch/
 scratch-*/
 
-# Plan documents and AI-assistant config: local working notes, never committed
+# plan documents and AI-assistant config: local working notes, never committed
 PLAN.md
 *PLAN*.md
 CLAUDE.md

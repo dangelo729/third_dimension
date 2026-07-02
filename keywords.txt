@@ -1,10 +1,10 @@
 #######################################
-# Syntax coloring map for ThirdDimension
-# Columns are separated by a single real tab.
+# syntax coloring map for ThirdDimension
+# columns are separated by a single real tab.
 #######################################
 
 #######################################
-# Datatypes (KEYWORD1)
+# datatypes (KEYWORD1)
 #######################################
 
 TD_Scene	KEYWORD1
@@ -37,7 +37,7 @@ TD_TorusMesh	KEYWORD1
 TD_PlaneMesh	KEYWORD1
 
 #######################################
-# Methods and functions (KEYWORD2)
+# methods and functions (KEYWORD2)
 #######################################
 
 render	KEYWORD2
@@ -141,7 +141,7 @@ tdXformDir	KEYWORD2
 tdXformFromPRS	KEYWORD2
 
 #######################################
-# Constants (LITERAL1)
+# constants (LITERAL1)
 #######################################
 
 TD_SHADED	LITERAL1
