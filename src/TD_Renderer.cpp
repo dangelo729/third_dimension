@@ -1,0 +1,576 @@
+// SPDX-License-Identifier: MIT
+#include "TD_Renderer.h"
+
+#include <math.h>
+#include <stdlib.h>
+
+#include "TD_Camera.h"
+#include "TD_Config.h"
+#include "TD_Scene.h"
+
+// the engine. one geometry pipeline serves every render target: transform ->
+// project -> per-triangle back-face cull -> one global painter sort -> Gouraud
+// shade -> scanline spans across the render-target seam.
+//
+// the floating-point expression shapes in the transform, projection, and
+// shading blocks below are pinned by bit-exact golden frame tests. translation
+// is added after the full rotation dot products; projection multiplies before
+// it divides; the shade formula evaluates left to right. an algebraically
+// equivalent rewrite is a behavioral change here.
+
+TD_Renderer::TD_Renderer() {
+  // all members carry in-class defaults; working buffers stay null until the
+  // first reserve()/render() grows them.
+}
+
+TD_Renderer::~TD_Renderer() {
+  // working buffers are renderer-owned; releasing here keeps the
+  // declare-a-global Arduino idiom leak-free.
+  releaseBuffers();
+}
+
+bool TD_Renderer::reserve(uint32_t maxVerts, uint32_t maxFaces, uint16_t maxObjects) {
+  // setup-time pre-allocation so failure is visible at init instead of
+  // mid-run: delegates to the same exact-fit grower the render path uses.
+  // sizing: 12 B/vertex + 16 B/face + ~104 B/object over the largest scene.
+  return ensureCapacity(maxVerts, maxFaces, maxObjects);
+}
+
+void TD_Renderer::releaseBuffers() {
+  // returns all working memory between scenes; the next reserve()/render()
+  // regrows lazily through ensureCapacity. the per-vertex arrays are one
+  // allocation — sy_/sz_ alias into sx_'s block, so only sx_ is freed.
+  // safe to call at any time between frames (free(nullptr) is a no-op).
+  free(sx_);
+  sx_ = sy_ = sz_ = nullptr;
+  capV_ = 0;
+  free(faceZ_);
+  faceZ_ = nullptr;
+  free(rec_);
+  rec_ = nullptr;
+  capF_ = 0;
+  free(objs_);
+  objs_ = nullptr;
+  capObj_ = 0;
+}
+
+bool TD_Renderer::ensureCapacity(uint32_t nv, uint32_t nf, uint16_t nobj) {
+  // exact-fit high-water growth: a block is replaced only when the request
+  // exceeds its capacity, and then to exactly the requested size — the
+  // footprint is a deterministic function of the largest scene seen. every
+  // replacement is allocated into a temporary and the members reassigned only
+  // on success, so a failed grow leaves all prior buffers valid and the frame
+  // aborts having drawn nothing.
+  if (nv > capV_) {
+    if (nv > 0x0FFFFFFFu) return false;  // 3*nv floats must fit size_t on 32-bit MCUs
+    float *p = (float *)malloc((size_t)nv * 3u * sizeof(float));
+    if (!p) return false;
+    free(sx_);
+    sx_ = p;
+    sy_ = p + nv;
+    sz_ = p + 2u * nv;
+    capV_ = nv;
+  }
+  if (nf > capF_) {
+    if (nf > 0x0FFFFFFFu) return false;
+    float *pz = (float *)malloc((size_t)nf * sizeof(float));
+    if (!pz) return false;
+    DrawRec *pr = (DrawRec *)malloc((size_t)nf * sizeof(DrawRec));
+    if (!pr) {
+      free(pz);
+      return false;
+    }
+    free(faceZ_);
+    faceZ_ = pz;
+    free(rec_);
+    rec_ = pr;
+    capF_ = nf;
+  }
+  if (nobj > capObj_) {
+    ObjFrame *po = (ObjFrame *)malloc((size_t)nobj * sizeof(ObjFrame));
+    if (!po) return false;
+    free(objs_);
+    objs_ = po;
+    capObj_ = nobj;
+  }
+  return true;
+}
+
+// scene-list filter: an object takes part in the frame when it is visible and
+// its mesh has geometry. empty meshes (failed primitive builds) render as a
+// safe no-op through this check alone.
+static inline bool tdKeepObject(const TD_Object &o) {
+  const TD_Mesh &m = o.mesh();
+  return o.visible() && m.nverts != 0 && m.ntris != 0 && m.nfaces != 0;
+}
+
+bool TD_Renderer::render(const TD_Scene &scene, TD_Camera &camera, TD_RenderTarget &target) {
+  // one complete frame is exactly one beginFrame..endFrame bracket around
+  // one pass. everything fallible runs in prepare() before the bracket
+  // opens, so a failed render leaves the target completely untouched — not
+  // even auto-cleared (auto-clear is the built-in targets' own beginFrame
+  // behavior, never the renderer's).
+  if (!prepare(scene, camera, target)) return false;
+  if (!target.beginFrame()) {
+    status_ = TD_ERR_NO_TARGET;
+    return false;
+  }
+  drawFrame(scene, camera, target);
+  // endFrame always closes an opened bracket: diffusion targets quantize
+  // exactly once per frame.
+  target.endFrame();
+  return true;
+}
+
+bool TD_Renderer::renderPass(const TD_Scene &scene, TD_Camera &camera, TD_RenderTarget &target) {
+  // the caller owns the frame bracket; a false return means nothing was
+  // drawn into it (the reason is in lastStatus()).
+  if (!prepare(scene, camera, target)) return false;
+  drawFrame(scene, camera, target);
+  return true;
+}
+
+bool TD_Renderer::prepare(const TD_Scene &scene, TD_Camera &camera, TD_RenderTarget &target) {
+  lastDrawn_ = 0;
+  lastSkipped_ = 0;
+
+  // everything that can fail happens here, before any pixel is touched.
+  int16_t tw = target.width(), th = target.height();
+  if (tw <= 0 || th <= 0) {
+    status_ = TD_ERR_NO_TARGET;
+    return false;
+  }
+  tw_ = tw;
+  th_ = th;
+
+  uint32_t totalV = 0, totalF = 0, nObj = 0;
+  for (const TD_Object *o = scene.firstObject(); o; o = o->next_) {
+    if (!tdKeepObject(*o)) continue;
+    totalV += o->mesh().nverts;  // uint32 sums: scene totals may exceed u16
+    totalF += o->mesh().nfaces;
+    ++nObj;
+  }
+  if (nObj == 0) {
+    status_ = TD_OK;  // an empty scene renders nothing, successfully
+    return true;
+  }
+  if (nObj > 0xFFFFu || !ensureCapacity(totalV, totalF, (uint16_t)nObj)) {
+    status_ = TD_ERR_ALLOC;
+    return false;
+  }
+
+  // scene bound sphere for camera auto-fit: AABB center of the per-object
+  // world spheres (position, |scale| * mesh bound radius), then the tightest
+  // radius around that center.
+  float mn[3] = {0.0f, 0.0f, 0.0f}, mx[3] = {0.0f, 0.0f, 0.0f};
+  bool firstSphere = true;
+  for (const TD_Object *o = scene.firstObject(); o; o = o->next_) {
+    if (!tdKeepObject(*o)) continue;
+    float r = fabsf(o->scale()) * td_meshBoundRadius(o->mesh());
+    float pos[3] = {o->x(), o->y(), o->z()};
+    for (int k = 0; k < 3; ++k) {
+      float lo = pos[k] - r, hi = pos[k] + r;
+      if (firstSphere || lo < mn[k]) mn[k] = lo;
+      if (firstSphere || hi > mx[k]) mx[k] = hi;
+    }
+    firstSphere = false;
+  }
+  TD_Vec3 sceneC = {(mn[0] + mx[0]) * 0.5f, (mn[1] + mx[1]) * 0.5f, (mn[2] + mx[2]) * 0.5f};
+  float sceneR = 0.0f;
+  for (const TD_Object *o = scene.firstObject(); o; o = o->next_) {
+    if (!tdKeepObject(*o)) continue;
+    float r = fabsf(o->scale()) * td_meshBoundRadius(o->mesh());
+    float d = tdLength(tdSub(tdVec3(o->x(), o->y(), o->z()), sceneC)) + r;
+    if (d > sceneR) sceneR = d;
+  }
+
+  // resolve camera intent (auto-fit latch, orbit pose, focal) against this
+  // frame's target dimensions and scene bounds.
+  if (!camera.resolve(tw_, th_, sceneC, sceneR)) {
+    status_ = TD_ERR_BAD_CAMERA;
+    return false;
+  }
+
+  status_ = TD_OK;
+  return true;
+}
+
+void TD_Renderer::drawFrame(const TD_Scene &scene, const TD_Camera &camera,
+                            TD_RenderTarget &target) {
+  // the camera's resolved rotation already maps world to view (rows = right,
+  // up, forward). lighting stays in world space: rotations preserve dot
+  // products, so shading with unrotated light and object-rotated normals is
+  // identical to view-space shading and cheaper.
+  const TD_Mat3 &Rv = camera.rot_;
+  const TD_Vec3 eye = camera.eye_;
+  const float focal = camera.focalPx_;
+  const float pcx = camera.cx_, pcy = camera.cy_;
+  const float nearZ = camera.nearSkip_;
+
+  // per-object transform into the shared buffers
+  uint32_t vertBase = 0, faceBase = 0;
+  uint16_t nKept = 0;
+  for (const TD_Object *o = scene.firstObject(); o; o = o->next_) {
+    if (!tdKeepObject(*o)) continue;
+    const TD_Mesh &msh = o->mesh();
+    ObjFrame &of = objs_[nKept];
+    of.mesh = &msh;
+    of.scale = o->scale();
+    of.vertBase = vertBase;
+    of.baseColor = o->color();
+    of.objectIdx = nKept;
+    of.material = (uint8_t)o->material();
+    of.N = tdEulerXYZ(o->rotX(), o->rotY(), o->rotZ());  // normals: rotation only
+    of.M = tdMat3ScaleUniform(tdMat3Mul(Rv, of.N), o->scale());
+    of.T = tdMat3MulVec(Rv, tdSub(tdVec3(o->x(), o->y(), o->z()), eye));
+
+    const TD_Mat3 &M = of.M;
+    const TD_Vec3 T = of.T;
+    for (uint16_t i = 0; i < msh.nverts; ++i) {
+      float vx = msh.verts[i][0], vy = msh.verts[i][1], vz = msh.verts[i][2];
+      // rotate/scale first, translate after the full dot products — pinned
+      // evaluation order.
+      float wx = M.m[0] * vx + M.m[1] * vy + M.m[2] * vz;
+      float wy = M.m[3] * vx + M.m[4] * vy + M.m[5] * vz;
+      float wz = M.m[6] * vx + M.m[7] * vy + M.m[8] * vz;
+      float px = wx + T.x, py = wy + T.y, pz = wz + T.z;
+      uint32_t gi = vertBase + i;
+      sz_[gi] = pz;
+      if (pz < nearZ) {  // face-level near-skip catches these below
+        sx_[gi] = 0.0f;
+        sy_[gi] = 0.0f;
+        continue;
+      }
+      sx_[gi] = pcx + focal * px / pz;  // multiply before divide
+      sy_[gi] = pcy - focal * py / pz;  // the one y-flip in the library
+    }
+
+    // mean view depth over each face's original polygon loop (true faces
+    // sort; fan diagonals never skew the key). any loop vertex closer than
+    // nearSkip drops the whole face — there is no near-plane clipping. a
+    // non-finite mean (NaN vertex) degrades to a skipped face instead of
+    // poisoning the sort.
+    for (uint16_t f = 0; f < msh.nfaces; ++f) {
+      uint16_t loopStart = msh.faces[f][2], loopCount = msh.faces[f][3];
+      float zsum = 0.0f;
+      bool skip = false;
+      for (uint16_t k = 0; k < loopCount; ++k) {
+        float z = sz_[vertBase + msh.faceVerts[loopStart + k]];
+        if (z < nearZ) {
+          skip = true;
+          break;
+        }
+        zsum += z;
+      }
+      float fz = -1e30f;
+      if (!skip) {
+        fz = zsum / (float)loopCount;
+        if (!isfinite(fz)) {
+          fz = -1e30f;
+          skip = true;
+        }
+      }
+      if (skip) ++lastSkipped_;
+      faceZ_[faceBase + f] = fz;
+    }
+
+    vertBase += msh.nverts;
+    faceBase += msh.nfaces;
+    ++nKept;
+  }
+
+  // frontness is tested per triangle: a non-planar quad's fan triangles may
+  // disagree, and the face draws if any of them fronts. decal faces join the
+  // second draw group, keyed by their own depth pulled nearer per layer; the
+  // bias is model-units by intent, so it scales with the object.
+  uint32_t nRec = 0;
+  uint32_t fBase = 0;
+  for (uint16_t oi = 0; oi < nKept; ++oi) {
+    const ObjFrame &of = objs_[oi];
+    const TD_Mesh &msh = *of.mesh;
+    const uint32_t vb = of.vertBase;
+    for (uint16_t f = 0; f < msh.nfaces; ++f) {
+      float fz = faceZ_[fBase + f];
+      if (fz <= -1e29f) continue;  // near-skip sentinel
+      uint16_t triStart = msh.faces[f][0], triCount = msh.faces[f][1];
+      bool anyFront = false;
+      for (uint16_t t = triStart; t < triStart + triCount && !anyFront; ++t) {
+        uint16_t a = msh.tris[t][0], b = msh.tris[t][1], c = msh.tris[t][2];
+        float ax = sx_[vb + a], ay = sy_[vb + a];
+        float cross =
+            (sx_[vb + b] - ax) * (sy_[vb + c] - ay) - (sy_[vb + b] - ay) * (sx_[vb + c] - ax);
+        anyFront = cullSign_ * cross > 0.0f;
+      }
+      if (!anyFront) continue;
+
+      float zkey = fz;
+      uint8_t grp = 0;
+      if (msh.fattr && msh.fattr[f].host != TD_NO_HOST) {
+        grp = 1;
+        // bias by the scale magnitude: the pull must always move decals
+        // nearer, and a mirrored (negative-scale) object must not invert
+        // its decal stacking order.
+        zkey -= (float)(msh.fattr[f].layer + 1) * TD_DECAL_BIAS * fabsf(of.scale);
+      }
+      rec_[nRec].z = zkey;
+      rec_[nRec].obj = oi;
+      rec_[nRec].face = f;
+      rec_[nRec].grp = grp;
+      ++nRec;
+    }
+    fBase += msh.nfaces;
+  }
+
+  // one global painter sort
+  if (nRec != 0) qsort(rec_, nRec, sizeof(DrawRec), cmpFarFirst);
+
+  // shade + draw back-to-front
+  const TD_Vec3 L = scene.light.direction();
+  const float lightIntensity = scene.light.intensity();
+  const float ambient = scene.ambient();
+
+  for (uint32_t i = 0; i < nRec; ++i) {
+    const DrawRec &r = rec_[i];
+    const ObjFrame &of = objs_[r.obj];
+    const TD_Mesh &msh = *of.mesh;
+    const uint32_t vb = of.vertBase;
+    uint16_t triStart = msh.faces[r.face][0], triCount = msh.faces[r.face][1];
+    uint16_t loopStart = msh.faces[r.face][2], loopCount = msh.faces[r.face][3];
+
+    // whole-object material override; lit defers to the mesh's per-face
+    // attributes. wireframe edges always draw as lit (base-colored lines on
+    // color targets, saturated on mono).
+    uint8_t mat = of.material != TD_MATERIAL_LIT
+                      ? of.material
+                      : (msh.fattr ? msh.fattr[r.face].mat : (uint8_t)TD_MATERIAL_LIT);
+    TD_MaterialCtx ctx;
+    ctx.mat = mode_ == TD_WIREFRAME ? (uint8_t)TD_MATERIAL_LIT : mat;
+    ctx.mode = mode_;
+    ctx.baseColor = of.baseColor;
+    ctx.objectIdx = r.obj;
+    ctx.faceIdx = r.face;
+    target.setMaterial(ctx);
+
+    if (mode_ != TD_WIREFRAME) {
+      for (uint16_t t = triStart; t < triStart + triCount; ++t) {
+        uint16_t a = msh.tris[t][0], b = msh.tris[t][1], c = msh.tris[t][2];
+        float ax = sx_[vb + a], ay = sy_[vb + a];
+        float bx = sx_[vb + b], by = sy_[vb + b];
+        float ccx = sx_[vb + c], ccy = sy_[vb + c];
+        float cross = (bx - ax) * (ccy - ay) - (by - ay) * (ccx - ax);
+        if (cullSign_ * cross <= 0.0f) continue;  // back-facing fan triangle
+
+        // corner shades: 2.0 saturates every dither (solid fill, white);
+        // 0.0 never lights (black); lit in shaded mode gets Gouraud
+        // clamp(ambient + (1 - ambient) * max(0, n·L) * intensity) with the
+        // normal rotated by the object rotation only (world-space shading).
+        float sh[3] = {2.0f, 2.0f, 2.0f};
+        if (mat == TD_MATERIAL_BLACK) {
+          sh[0] = sh[1] = sh[2] = 0.0f;
+        } else if (mode_ == TD_SHADED && mat == TD_MATERIAL_LIT) {
+          const TD_Mat3 &N = of.N;
+          for (int k = 0; k < 3; ++k) {
+            const float *cn = msh.cnorms[3 * t + k];
+            float nx = N.m[0] * cn[0] + N.m[1] * cn[1] + N.m[2] * cn[2];
+            float ny = N.m[3] * cn[0] + N.m[4] * cn[1] + N.m[5] * cn[2];
+            float nz = N.m[6] * cn[0] + N.m[7] * cn[1] + N.m[8] * cn[2];
+            float diff = nx * L.x + ny * L.y + nz * L.z;
+            if (diff < 0.0f) diff = 0.0f;
+            float lit = ambient + (1.0f - ambient) * diff * lightIntensity;
+            sh[k] = lit > 1.0f ? 1.0f : lit;
+          }
+        }
+        fillTri(target, ax, ay, sh[0], bx, by, sh[1], ccx, ccy, sh[2]);
+      }
+    }
+    if (mode_ == TD_SOLID) {
+      // true-edge outlines at exact shade 0.0; the material context is
+      // re-latched to black so color targets draw them in the exact palette.
+      ctx.mat = TD_MATERIAL_BLACK;
+      target.setMaterial(ctx);
+      outlineLoop(target, of, loopStart, loopCount, 0.0f);
+    } else if (mode_ == TD_WIREFRAME) {
+      outlineLoop(target, of, loopStart, loopCount, 2.0f);
+    }
+  }
+
+  lastDrawn_ = nRec;
+}
+
+// painter comparator for qsort over DrawRec. draw order:
+//   1. grp ascending   — all body faces (0) before all decals (1)
+//   2. z descending    — far first within a group
+//   3. obj ascending   — tie-break: instances of one mesh tie exactly
+//   4. face ascending  — tie-break: coplanar faces within one object
+// the trailing tie-breaks leave no two records equal, so the unstable,
+// libc-specific qsort yields one deterministic permutation and the sorted
+// output is a pure function of the input.
+int TD_Renderer::cmpFarFirst(const void *a, const void *b) {
+  const DrawRec *ra = (const DrawRec *)a, *rb = (const DrawRec *)b;
+  if (ra->grp != rb->grp) return (int)ra->grp - (int)rb->grp;
+  if (ra->z > rb->z) return -1;
+  if (ra->z < rb->z) return 1;
+  if (ra->obj != rb->obj) return (int)ra->obj - (int)rb->obj;
+  return (int)ra->face - (int)rb->face;
+}
+
+// scanline fill sampling pixel centers, half-open on the right/bottom:
+// adjacent triangles sharing an edge neither crack nor double-draw. each
+// vertex carries its own shade; edges and spans interpolate it (Gouraud,
+// screen-linear). the row bounds are clamped in float space before the int
+// conversion so extreme projections cannot overflow the cast; in-range
+// values convert identically to the unclamped expression.
+void TD_Renderer::fillTri(TD_RenderTarget &t, float x0, float y0, float s0, float x1, float y1,
+                          float s1, float x2, float y2, float s2) {
+  float tx, ty, ts;
+  if (y0 > y1) {
+    tx = x0; x0 = x1; x1 = tx;
+    ty = y0; y0 = y1; y1 = ty;
+    ts = s0; s0 = s1; s1 = ts;
+  }
+  if (y1 > y2) {
+    tx = x1; x1 = x2; x2 = tx;
+    ty = y1; y1 = y2; y2 = ty;
+    ts = s1; s1 = s2; s2 = ts;
+  }
+  if (y0 > y1) {
+    tx = x0; x0 = x1; x1 = tx;
+    ty = y0; y0 = y1; y1 = ty;
+    ts = s0; s0 = s1; s1 = ts;
+  }
+  if (!(y2 - y0 >= 1e-6f)) return;  // degenerate or non-finite
+
+  float fys = ceilf(y0 - 0.5f);  // first row whose center >= y0
+  float fye = ceilf(y2 - 0.5f);  // one past the last row whose center < y2
+  if (fys < 0.0f) fys = 0.0f;
+  if (fys > (float)th_) fys = (float)th_;
+  if (fye < 0.0f) fye = 0.0f;
+  if (fye > (float)th_) fye = (float)th_;
+  int ys = (int)fys;
+  int ye = (int)fye - 1;
+
+  for (int y = ys; y <= ye; ++y) {
+    float yc = y + 0.5f;
+    if (yc < y0 || yc >= y2) continue;  // numeric safety at the seams
+    float ta = (yc - y0) / (y2 - y0);   // long edge v0->v2
+    float xa = x0 + (x2 - x0) * ta;
+    float sa = s0 + (s2 - s0) * ta;
+    float xb, sb;
+    if (yc < y1) {
+      float d = y1 - y0;
+      float tb = d > 1e-6f ? (yc - y0) / d : 1.0f;
+      xb = x0 + (x1 - x0) * tb;
+      sb = s0 + (s1 - s0) * tb;
+    } else {
+      float d = y2 - y1;
+      float tb = d > 1e-6f ? (yc - y1) / d : 0.0f;
+      xb = x1 + (x2 - x1) * tb;
+      sb = s1 + (s2 - s1) * tb;
+    }
+    if (xa > xb) {
+      float tmp = xa; xa = xb; xb = tmp;
+      tmp = sa; sa = sb; sb = tmp;
+    }
+    fillSpan(t, y, xa, xb, sa, sb);
+  }
+}
+
+// one Gouraud span. the span is clipped to the viewport here, by
+// construction — it arrives at the target already in-bounds, so target hot
+// loops carry no bounds checks. the seam is crossed exactly once; the target
+// evaluates shade(x) = sl + (x + 0.5f - xl) * slope, and a degenerate width
+// forces slope 0 so equal endpoints stay exact (flat-lit faces, solid fills,
+// and ambient-1.0 silhouettes must saturate).
+void TD_Renderer::fillSpan(TD_RenderTarget &t, int y, float xl, float xr, float sl, float sr) {
+  if (!(xl <= xr)) return;        // non-finite guard; callers pass xl <= xr
+  float fxs = ceilf(xl - 0.5f);   // first pixel whose center >= xl
+  float fxe = ceilf(xr - 0.5f);   // one past the last pixel whose center < xr
+  if (fxs < 0.0f) fxs = 0.0f;
+  if (fxs > (float)tw_) fxs = (float)tw_;
+  if (fxe < 0.0f) fxe = 0.0f;
+  if (fxe > (float)tw_) fxe = (float)tw_;
+  int xs = (int)fxs;
+  int xe = (int)fxe - 1;
+  if (xe < xs) return;
+  float w = xr - xl;
+  float slope = w > 1e-6f ? (sr - sl) / w : 0.0f;
+  t.plotShadeSpan((int16_t)y, (int16_t)xs, (int16_t)xe, xl, sl, slope);
+}
+
+// Bresenham line through the per-pixel seam. endpoints snap with floorf so
+// outlines register with the fill's pixel-center sampling. the float
+// endpoints are clipped parametrically to the guard band before any integer
+// conversion: near-skip-grazing geometry can project to millions of pixels
+// off-screen, which is undefined float->int behavior and an unbounded walk
+// if left unclamped. the clip keeps the drawn pixels collinear with the
+// true segment (per-axis clamping would bend the visible portion); in-band
+// endpoints pass through untouched, and the viewport lies strictly inside
+// the band, so nothing visible is ever lost. the per-pixel bounds funnel
+// here is the one per-pixel check left in the pipeline (spans are clipped
+// by construction).
+void TD_Renderer::drawLineShade(TD_RenderTarget &t, float x0, float y0, float x1, float y1,
+                                float shade) {
+  if (!(isfinite(x0) && isfinite(y0) && isfinite(x1) && isfinite(y1))) return;
+  const float bx = (float)TD_GUARD_BAND * (float)tw_;
+  const float by = (float)TD_GUARD_BAND * (float)th_;
+  const float dxf = x1 - x0, dyf = y1 - y0;
+  // Liang-Barsky: tighten [t0,t1] against each band edge; p is the segment's
+  // speed toward the edge, q the start point's signed clearance.
+  const float p[4] = {-dxf, dxf, -dyf, dyf};
+  const float q[4] = {x0 + bx, bx - x0, y0 + by, by - y0};
+  float t0 = 0.0f, t1 = 1.0f;
+  for (int k = 0; k < 4; ++k) {
+    if (p[k] == 0.0f) {
+      if (q[k] < 0.0f) return;  // parallel to this edge and fully outside
+      continue;
+    }
+    float r = q[k] / p[k];
+    if (p[k] < 0.0f) {
+      if (r > t0) t0 = r;  // entering the band
+    } else {
+      if (r < t1) t1 = r;  // leaving the band
+    }
+  }
+  if (t0 > t1) return;  // the segment never enters the band
+  if (t1 < 1.0f) {      // clip the far endpoint first: it derives from x0/y0
+    x1 = x0 + t1 * dxf;
+    y1 = y0 + t1 * dyf;
+  }
+  if (t0 > 0.0f) {
+    x0 = x0 + t0 * dxf;
+    y0 = y0 + t0 * dyf;
+  }
+
+  int ix0 = (int)floorf(x0), iy0 = (int)floorf(y0);
+  int ix1 = (int)floorf(x1), iy1 = (int)floorf(y1);
+  int dx = abs(ix1 - ix0), sx = ix0 < ix1 ? 1 : -1;
+  int dy = -abs(iy1 - iy0), sy = iy0 < iy1 ? 1 : -1;
+  int err = dx + dy;
+  for (;;) {
+    if ((unsigned)ix0 < (unsigned)tw_ && (unsigned)iy0 < (unsigned)th_)
+      t.plotShade((int16_t)ix0, (int16_t)iy0, shade);
+    if (ix0 == ix1 && iy0 == iy1) break;
+    int e2 = 2 * err;
+    if (e2 >= dy) {
+      err += dy;
+      ix0 += sx;
+    }
+    if (e2 <= dx) {
+      err += dx;
+      iy0 += sy;
+    }
+  }
+}
+
+// outline a face's original polygon loop — true edges, never fan diagonals —
+// through the shared vertex buffers at the object's offset.
+void TD_Renderer::outlineLoop(TD_RenderTarget &t, const ObjFrame &of, uint16_t loopStart,
+                              uint16_t loopCount, float shade) {
+  const TD_Mesh &msh = *of.mesh;
+  const uint32_t vb = of.vertBase;
+  for (uint16_t k = 0; k < loopCount; ++k) {
+    uint32_t i = vb + msh.faceVerts[loopStart + k];
+    uint32_t j = vb + msh.faceVerts[loopStart + (uint16_t)((k + 1) % loopCount)];
+    drawLineShade(t, sx_[i], sy_[i], sx_[j], sy_[j], shade);
+  }
+}
