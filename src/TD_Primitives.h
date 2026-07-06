@@ -28,7 +28,7 @@
 // scene referencing it, exactly like a flash mesh header.
 //
 // memory (single block): 12*nv + 42*nt + 8*nf + 2*nloop bytes. defaults:
-// box 696 B, sphere(16,8) 13.4 KB, torus(16,8) 14.3 KB; corner normals are
+// box 696 B, sphere(16,8) 12.8 KB, torus(16,8) 14.3 KB; corner normals are
 // ~64% of every budget.
 
 class TD_BoxMesh : public TD_Mesh {
