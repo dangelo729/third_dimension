@@ -57,10 +57,12 @@ Optional hooks:
 - `beginFrame()` — clear your surface; return false to abort the render.
 - `setMaterial(const TD_MaterialCtx &ctx)` — called after the painter sort
   before a face's draw groups: once for the fill, then re-latched to BLACK
-  before a SOLID outline pass. `ctx` carries the face's `TD_Material`, the
-  render mode, the owning object's RGB565 `baseColor`, and object/face
-  indices. Latch what you need; mono-style targets can ignore it (materials
-  reach them through shade encoding).
+  before a SOLID outline pass (cel ink re-latches to BLACK or WHITE per its
+  ink style). `ctx` carries the face's `TD_Material`, the render mode
+  (`ctx.mode`, informational — it now carries `TD_CEL` = 3 too), the owning
+  object's RGB565 `baseColor`, and object/face indices. Latch what you need;
+  mono-style targets can ignore it (materials reach them through shade
+  encoding).
 - `endFrame()` — for deferred output (the mono target's error-diffusion
   methods quantize their recorded frame here).
 
@@ -77,10 +79,11 @@ Renderer guarantees to the target:
 - **G2 (coverage).** Every pixel covered by a front face is plotted,
   including fully dark ones. Painter overwrite — a near face covering a
   far one — depends on dark pixels being delivered.
-- **G3 (endpoint shades).** BLACK-material faces and SOLID-mode outlines
-  arrive as exactly `0.0`; WHITE faces, SOLID fills, and WIREFRAME lines
-  as `2.0` (saturated past every threshold); LIT Gouraud shades are
-  clamped to `[ambient, 1.0]`.
+- **G3 (endpoint shades).** BLACK-material faces, SOLID-mode outlines, and
+  TD_CEL black ink arrive as exactly `0.0`; WHITE faces, SOLID fills,
+  WIREFRAME lines, and TD_CEL white ink as `2.0` (saturated past every
+  threshold); LIT Gouraud shades are clamped to `[ambient, 1.0]`, and TD_CEL
+  band levels arrive within that range as exact slope-0 spans.
 
 Target guarantees to the renderer:
 
@@ -125,8 +128,13 @@ saturated shades).
 | **TD_SHADED** | Gouraud shades dithered by the active method | Gouraud shade modulates per-object baseColor — no dithering |
 | **TD_SOLID** | saturated fill (shade 2.0) + true-edge outlines at 0.0 | flat baseColor fill + outlines in matBlack |
 | **TD_WIREFRAME** | front-face loop edges at 2.0 (always lit) | loop edges in per-object baseColor |
+| **TD_CEL** | uniform screentone bands under the ordered methods (interiors motion-stable); under diffusion the 1.0 top band is hard-on but mid bands still crawl | N flat color steps of baseColor + ink in the exact matBlack/matWhite palette |
 | **materials** | BLACK never speckles; WHITE never drops pixels (dither endpoint guarantees) | BLACK/WHITE fill exact matBlack/matWhite palette colors, light ignored |
 | **decals** | draw after all body faces, layer-ordered (envelope in `limits.md`) | same |
+
+A custom `plotShade`-only target gets TD_CEL for free and exactly: band
+levels arrive as slope-0 spans, and the default span loop delivers
+`leftShade` unchanged to every pixel.
 
 ## The built-in targets
 

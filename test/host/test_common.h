@@ -71,6 +71,7 @@ float frand(float lo, float hi);
 // suite entry points, run in this order by test_main.cpp.
 void runDitherTests();
 void runRenderTests();
+void runCelTests();
 void runPrimitiveTests();
 
 #endif  // TD_TEST_COMMON_H

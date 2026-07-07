@@ -40,4 +40,9 @@
 // walks off-screen.
 #define TD_GUARD_BAND 4
 
+// TD_CEL band-count ceiling. eight bands already exceed what the coarsest
+// dither method can distinguish (BAYER2 carries 5 levels) and bound the
+// per-span split loop.
+#define TD_CEL_MAX_BANDS 8
+
 #endif  // TD_CONFIG_H

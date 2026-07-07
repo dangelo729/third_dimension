@@ -39,6 +39,17 @@ class TD_Renderer {
   void setMode(TD_RenderMode m) { mode_ = m; }
   TD_RenderMode mode() const { return (TD_RenderMode)mode_; }
 
+  // cel band count for TD_CEL: lit shades quantize to this many uniform
+  // levels spanning [ambient, 1.0]. clamped to 2..TD_CEL_MAX_BANDS; default 4.
+  void setCelBands(uint8_t n) {
+    celBands_ = n < 2 ? 2 : (n > TD_CEL_MAX_BANDS ? TD_CEL_MAX_BANDS : n);
+  }
+  uint8_t celBands() const { return celBands_; }
+
+  // cel ink style for TD_CEL's outline pass. default TD_CEL_INK_BLACK.
+  void setCelInk(TD_CelInk ink) { celInk_ = (uint8_t)ink; }
+  TD_CelInk celInk() const { return (TD_CelInk)celInk_; }
+
   // runtime winding flip for meshes wound clockwise-outward. default +1.
   void setCullSign(float s) { cullSign_ = s; }
 
@@ -102,6 +113,13 @@ class TD_Renderer {
   uint16_t capObj_ = 0;
 
   uint8_t mode_ = TD_SHADED;
+  uint8_t celBands_ = 4;
+  uint8_t celInk_ = TD_CEL_INK_BLACK;
+  // cel latches, valid only inside drawFrame: set per frame before the
+  // painter loop and per face before its fill; never carried across frames.
+  bool celFrameOn_ = false;
+  bool celSpanOn_ = false;
+  float celAmbient_ = 0.0f;
   float cullSign_ = 1.0f;
   uint8_t status_ = TD_OK;
   int16_t tw_ = 0, th_ = 0;  // target dims cached for the frame
@@ -119,15 +137,37 @@ class TD_Renderer {
 
   // rasterization: scanline fill sampling pixel centers, half-open
   // right/bottom (adjacent triangles neither crack nor double-draw); spans
-  // cross the seam once each; Bresenham lines clamp endpoints to the
-  // TD_GUARD_BAND before integer conversion and keep the per-pixel bounds
-  // funnel (the one place pixels could go out of bounds).
+  // cross the seam once each, except that cel banding may split a geometric
+  // span into several flat sub-spans, each crossing once; Bresenham lines
+  // clamp endpoints to the TD_GUARD_BAND before integer conversion and keep
+  // the per-pixel bounds funnel (the one place pixels could go out of
+  // bounds).
   void fillTri(TD_RenderTarget &t, float x0, float y0, float s0, float x1, float y1, float s1,
                float x2, float y2, float s2);
   void fillSpan(TD_RenderTarget &t, int y, float xl, float xr, float sl, float sr);
+  void celFillSpan(TD_RenderTarget &t, int y, float xl, float xr, float sl, float sr);
   void drawLineShade(TD_RenderTarget &t, float x0, float y0, float x1, float y1, float shade);
   void outlineLoop(TD_RenderTarget &t, const ObjFrame &of, uint16_t loopStart,
                    uint16_t loopCount, float shade);
 };
+
+// the pure cel quantizers, standalone like td_ditherOn: the renderer calls
+// exactly these, so the host tests pin the render path's own band math.
+// expression shapes are golden-pinned — treat rewrites as behavioral changes.
+
+// shade threshold between cel band k and k+1 among `bands` uniform levels
+// spanning [ambient, 1.0]. thresholds sit at level midpoints. callers pass
+// 0 <= k <= bands-2, bands >= 2, ambient sufficiently below 1: within a few
+// ulps of 1.0 a threshold can round to exactly 1.0f and the top band becomes
+// unreachable — a harmless degradation, never UB.
+float td_celThresh(int k, float ambient, uint8_t bands);
+
+// cel band index of a lit shade: the number of thresholds the shade exceeds.
+// monotone in shade; NaN maps to band 0.
+int td_celBand(float shade, float ambient, uint8_t bands);
+
+// output level of a cel band: band 0 is exactly ambient, the top band
+// exactly 1.0f.
+float td_celLevel(int band, float ambient, uint8_t bands);
 
 #endif  // TD_RENDERER_H

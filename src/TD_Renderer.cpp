@@ -329,6 +329,12 @@ void TD_Renderer::drawFrame(const TD_Scene &scene, const TD_Camera &camera,
   const float lightIntensity = scene.light.intensity();
   const float ambient = scene.ambient();
 
+  // cel banding applies only to LIT gouraud fills; ambient >= 1 collapses
+  // every band to 1.0, so the frame degrades to flat-lit fills. latched per
+  // drawFrame — the latch never survives from a prior frame or pass.
+  celAmbient_ = ambient;
+  celFrameOn_ = mode_ == TD_CEL && 1.0f - ambient > 0.0f;
+
   for (uint32_t i = 0; i < nRec; ++i) {
     const DrawRec &r = rec_[i];
     const ObjFrame &of = objs_[r.obj];
@@ -343,6 +349,9 @@ void TD_Renderer::drawFrame(const TD_Scene &scene, const TD_Camera &camera,
     uint8_t mat = of.material != TD_MATERIAL_LIT
                       ? of.material
                       : (msh.fattr ? msh.fattr[r.face].mat : (uint8_t)TD_MATERIAL_LIT);
+    // quantization is scoped to LIT fills: BLACK/WHITE sentinel shades flow
+    // through the untouched span path.
+    celSpanOn_ = celFrameOn_ && mat == TD_MATERIAL_LIT;
     TD_MaterialCtx ctx;
     ctx.mat = mode_ == TD_WIREFRAME ? (uint8_t)TD_MATERIAL_LIT : mat;
     ctx.mode = mode_;
@@ -361,13 +370,15 @@ void TD_Renderer::drawFrame(const TD_Scene &scene, const TD_Camera &camera,
         if (cullSign_ * cross <= 0.0f) continue;  // back-facing fan triangle
 
         // corner shades: 2.0 saturates every dither (solid fill, white);
-        // 0.0 never lights (black); lit in shaded mode gets Gouraud
+        // 0.0 never lights (black); lit in shaded and cel modes gets Gouraud
         // clamp(ambient + (1 - ambient) * max(0, n·L) * intensity) with the
         // normal rotated by the object rotation only (world-space shading).
+        // cel keeps the corner shades continuous — quantization happens per
+        // span, after interpolation, in celFillSpan.
         float sh[3] = {2.0f, 2.0f, 2.0f};
         if (mat == TD_MATERIAL_BLACK) {
           sh[0] = sh[1] = sh[2] = 0.0f;
-        } else if (mode_ == TD_SHADED && mat == TD_MATERIAL_LIT) {
+        } else if ((mode_ == TD_SHADED || mode_ == TD_CEL) && mat == TD_MATERIAL_LIT) {
           const TD_Mat3 &N = of.N;
           for (int k = 0; k < 3; ++k) {
             const float *cn = msh.cnorms[3 * t + k];
@@ -383,12 +394,18 @@ void TD_Renderer::drawFrame(const TD_Scene &scene, const TD_Camera &camera,
         fillTri(target, ax, ay, sh[0], bx, by, sh[1], ccx, ccy, sh[2]);
       }
     }
-    if (mode_ == TD_SOLID) {
+    if (mode_ == TD_SOLID || (mode_ == TD_CEL && celInk_ == TD_CEL_INK_BLACK)) {
       // true-edge outlines at exact shade 0.0; the material context is
       // re-latched to black so color targets draw them in the exact palette.
       ctx.mat = TD_MATERIAL_BLACK;
       target.setMaterial(ctx);
       outlineLoop(target, of, loopStart, loopCount, 0.0f);
+    } else if (mode_ == TD_CEL && celInk_ == TD_CEL_INK_WHITE) {
+      // light ink at exact shade 2.0: reads against dark 1-bit backgrounds;
+      // the re-latch gives color targets the exact matWhite palette entry.
+      ctx.mat = TD_MATERIAL_WHITE;
+      target.setMaterial(ctx);
+      outlineLoop(target, of, loopStart, loopCount, 2.0f);
     } else if (mode_ == TD_WIREFRAME) {
       outlineLoop(target, of, loopStart, loopCount, 2.0f);
     }
@@ -412,6 +429,30 @@ int TD_Renderer::cmpFarFirst(const void *a, const void *b) {
   if (ra->z < rb->z) return 1;
   if (ra->obj != rb->obj) return (int)ra->obj - (int)rb->obj;
   return (int)ra->face - (int)rb->face;
+}
+
+// the cel quantizers. one expression family: td_celBand classifies by
+// comparing against the same td_celThresh values celFillSpan solves span
+// crossings at, so classification and boundary placement cannot disagree.
+
+float td_celThresh(int k, float ambient, uint8_t bands) {
+  return ambient + (1.0f - ambient) * (((float)k + 0.5f) / (float)(bands - 1));
+}
+
+int td_celBand(float shade, float ambient, uint8_t bands) {
+  // bands <= TD_CEL_MAX_BANDS, so this is at most 7 comparisons.
+  int b = 0;
+  for (int k = 0; k <= (int)bands - 2; ++k)
+    if (shade > td_celThresh(k, ambient, bands)) b = k + 1;  // NaN: all false -> 0
+  return b;
+}
+
+float td_celLevel(int band, float ambient, uint8_t bands) {
+  // endpoint exactness by branch, not arithmetic: ambient + (1 - ambient)
+  // is not reliably 1.0f in float.
+  if (band <= 0) return ambient;            // bottom band: exactly the shade floor
+  if (band >= (int)bands - 1) return 1.0f;  // top band: exactly saturated
+  return ambient + (1.0f - ambient) * ((float)band / (float)(bands - 1));
 }
 
 // scanline fill sampling pixel centers, half-open on the right/bottom:
@@ -471,7 +512,8 @@ void TD_Renderer::fillTri(TD_RenderTarget &t, float x0, float y0, float s0, floa
       float tmp = xa; xa = xb; xb = tmp;
       tmp = sa; sa = sb; sb = tmp;
     }
-    fillSpan(t, y, xa, xb, sa, sb);
+    if (celSpanOn_) celFillSpan(t, y, xa, xb, sa, sb);
+    else fillSpan(t, y, xa, xb, sa, sb);
   }
 }
 
@@ -495,6 +537,47 @@ void TD_Renderer::fillSpan(TD_RenderTarget &t, int y, float xl, float xr, float 
   float w = xr - xl;
   float slope = w > 1e-6f ? (sr - sl) / w : 0.0f;
   t.plotShadeSpan((int16_t)y, (int16_t)xs, (int16_t)xe, xl, sl, slope);
+}
+
+// split one gouraud span at cel band-threshold crossings into flat
+// sub-spans, each re-emitted through fillSpan with equal endpoint shades so
+// the pinned slope expression yields exactly +0.0f and every target receives
+// the exact band level. span shade is screen-linear, so crossings solve
+// analytically in x; the monotone clamp makes the sub-spans a crack-free,
+// overlap-free partition of [xl, xr]. endpoints arrive unclamped (fillSpan
+// clips), so g can overflow on near-skip-grazing geometry — the isfinite
+// guard degrades those spans to one flat fill at the left band's level,
+// keeping coverage a write.
+void TD_Renderer::celFillSpan(TD_RenderTarget &t, int y, float xl, float xr, float sl,
+                              float sr) {
+  const float a = celAmbient_;
+  const uint8_t n = celBands_;
+  int bl = td_celBand(sl, a, n), br = td_celBand(sr, a, n);
+  if (bl == br) {
+    float lv = td_celLevel(bl, a, n);
+    fillSpan(t, y, xl, xr, lv, lv);
+    return;
+  }
+  const float g = (xr - xl) / (sr - sl);  // pixels per unit shade; bl != br => sr != sl
+  if (!isfinite(g)) {
+    float lv = td_celLevel(bl, a, n);
+    fillSpan(t, y, xl, xr, lv, lv);
+    return;
+  }
+  const int d = br > bl ? 1 : -1;
+  float x0 = xl;
+  for (int b = bl; b != br; b += d) {
+    int k = d > 0 ? b : b - 1;  // threshold index between bands b and b+d
+    float thr = td_celThresh(k, a, n);
+    float xc = xl + (thr - sl) * g;
+    if (xc < x0) xc = x0;  // monotone partition
+    if (xc > xr) xc = xr;
+    float lv = td_celLevel(b, a, n);
+    fillSpan(t, y, x0, xc, lv, lv);
+    x0 = xc;
+  }
+  float lv = td_celLevel(br, a, n);
+  fillSpan(t, y, x0, xr, lv, lv);
 }
 
 // Bresenham line through the per-pixel seam. endpoints snap with floorf so

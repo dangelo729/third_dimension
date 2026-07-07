@@ -17,7 +17,19 @@ enum TD_RenderMode : uint8_t {
   TD_SHADED = 0,          // Gouraud-lit fill (dithered on mono targets)
   TD_SOLID = 1,           // saturated fill + black true-edge outlines
   TD_WIREFRAME = 2,       // front-facing polygon edges only
-  TD_RENDER_MODE_COUNT = 3,
+  TD_CEL = 3,             // lit fill quantized to flat bands + true-edge ink
+  TD_RENDER_MODE_COUNT = 4,
+};
+
+// ink style for TD_CEL's true-edge outlines. BLACK draws at exact shade 0.0
+// (matBlack on color targets), WHITE at exact shade 2.0 (matWhite) so lines
+// read against dark 1-bit backgrounds, NONE disables the ink pass for pure
+// banded fills. order is frozen, same doctrine as TD_Dither.
+enum TD_CelInk : uint8_t {
+  TD_CEL_INK_BLACK = 0,   // classic dark ink (the default; TD_SOLID's look)
+  TD_CEL_INK_WHITE,       // light ink: rides the WHITE sentinel, pops on dark mono
+  TD_CEL_INK_NONE,        // no outlines: pure screentone bands
+  TD_CEL_INK_COUNT,
 };
 
 // 1-bit dither methods, selected on TD_MonoTarget. order is frozen: golden

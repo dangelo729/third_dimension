@@ -34,6 +34,11 @@ class TD_Scene {
   void setRenderMode(TD_RenderMode m) { renderer_.setMode(m); }  // default TD_SHADED
   TD_RenderMode renderMode() const { return renderer_.mode(); }
 
+  void setCelBands(uint8_t n) { renderer_.setCelBands(n); }  // TD_CEL band count; default 4
+  uint8_t celBands() const { return renderer_.celBands(); }
+  void setCelInk(TD_CelInk ink) { renderer_.setCelInk(ink); }  // TD_CEL ink; default black
+  TD_CelInk celInk() const { return renderer_.celInk(); }
+
   // render exactly one frame into the target (beginFrame..endFrame bracketed).
   // returns false on failure — reason in lastStatus() — with the target
   // completely untouched (validation, buffer growth, and camera resolution all

@@ -27,7 +27,9 @@ TD_RenderTarget   TD_MonoTarget · TD_Color565Target · GFX adapters · yours
 The renderer runs the whole geometry pipeline and hands the target *shade
 values*; the target decides pixels. The seam is crossed once per Gouraud
 **span**, not per pixel — per-pixel `plotShade` remains only for line drawing
-and minimal custom targets.
+and minimal custom targets. (`TD_CEL` may split one geometric span into
+several flat sub-spans at band-threshold crossings; each sub-span still
+arrives through one `plotShadeSpan` call.)
 
 ## The pipeline, stage by stage
 
@@ -68,17 +70,28 @@ One `scene.render(target)` call performs, in order:
 7. **Shade & draw.** Back to front, per record: `target.setMaterial(ctx)` with
    the face's material, mode, and owning object's base color; then per front
    triangle the three corner shades — BLACK → 0.0, WHITE and SOLID fills → 2.0
-   (saturates every dither), LIT under `TD_SHADED` → Gouraud `clamp(ambient +
-   (1 − ambient) · max(0, n·L) · intensity)` with the normal rotated to world
-   space. The scanline fill samples pixel centers and is half-open
-   right/bottom, so adjacent triangles neither crack nor double-draw.
+   (saturates every dither), LIT under `TD_SHADED` or `TD_CEL` → Gouraud
+   `clamp(ambient + (1 − ambient) · max(0, n·L) · intensity)` with the normal
+   rotated to world space. Cel keeps corner shades continuous — quantization
+   happens per span, after interpolation (stage 8). The scanline fill samples
+   pixel centers and is half-open right/bottom, so adjacent triangles neither
+   crack nor double-draw.
 8. **Spans.** Each scanline segment clamps to the viewport and crosses the seam
    once: `target.plotShadeSpan(y, xs, xe, leftEdgeX, leftShade, shadeSlope)`.
-   SOLID adds true-edge outlines at shade 0.0; WIREFRAME draws the polygon loops
-   at 2.0. Lines are Bresenham, endpoints clipped (Liang–Barsky) to a guard band
-   (±4× the target dimensions, in float space) before integer conversion, then
-   funneled through a per-pixel bounds check — the one place per-pixel checking
-   still exists.
+   Under `TD_CEL`, a LIT span is first split at band-threshold crossings into
+   flat sub-spans, each re-emitted with equal endpoint shades so the pinned
+   slope expression yields exactly `+0.0f` and the target receives the exact
+   band level; the quantizer shapes are themselves pinned —
+   `td_celThresh(k) = ambient + (1 − ambient) · ((k + 0.5) / (bands − 1))`,
+   `td_celLevel(band) = ambient + (1 − ambient) · (band / (bands − 1))` with
+   the bottom/top bands returned as exactly `ambient` / `1.0f` by branch, and
+   `td_celBand` classifying by comparison against the same `td_celThresh`
+   values the splitter solves crossings at. SOLID (and TD_CEL's black ink)
+   adds true-edge outlines at shade 0.0; WIREFRAME draws the polygon loops at
+   2.0, as does TD_CEL's white ink. Lines are Bresenham, endpoints clipped
+   (Liang–Barsky) to a guard band (±4× the target dimensions, in float space)
+   before integer conversion, then funneled through a per-pixel bounds check —
+   the one place per-pixel checking still exists.
 9. **Finish.** `target.endFrame()` — error-diffusion dithers quantize their
    recorded shade field here. `lastDrawCount()` / `lastNearSkipCount()` are
    tallied during culling and drawing above and are final the moment `render()`

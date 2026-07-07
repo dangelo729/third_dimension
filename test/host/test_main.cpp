@@ -81,6 +81,7 @@ float frand(float lo, float hi) {
 int main() {
   runDitherTests();
   runRenderTests();
+  runCelTests();
   runPrimitiveTests();
 
   if (failures == 0)

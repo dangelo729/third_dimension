@@ -13,6 +13,22 @@ releases may break API; breaks are called out under a "Breaking" heading.
 
 ### Added
 
+- **Cel (toon) shading: the `TD_CEL` render mode.** Gouraud lighting quantized *after*
+  interpolation into 2–8 flat bands spanning `[ambient, 1.0]` (`setCelBands`, default 4),
+  plus switchable true-edge outline ink (`setCelInk`: `TD_CEL_INK_BLACK` default /
+  `WHITE` / `NONE`). The renderer splits each Gouraud span at band-threshold crossings
+  into flat sub-spans re-emitted with `shadeSlope == 0.0f`, so **every** target — all ten
+  mono dithers, RGB565, GFX adapters, and custom `plotShade`-only targets — receives
+  exact band levels with zero target changes. On 1-bit displays each band renders as a
+  uniform screen-locked dither tile (the screentone look; band interiors are temporally
+  stable under the ordered methods), on RGB565 as N exact flat color steps. The pure
+  quantizers ship as pinned API surface (`td_celBand`, `td_celLevel`, `td_celThresh`),
+  with the band ceiling at `TD_CEL_MAX_BANDS` (8). **No existing golden pins moved** —
+  cel is additive, and disabled paths evaluate byte-identical expressions; new pins cover
+  the quantizer signature, cel golden frames for all ten dither methods, band/ink sweeps,
+  and the library's first color-target frame hash. Custom targets note:
+  `TD_MaterialCtx.mode` (informational) may now carry the value 3, and cel ink re-latches
+  the material context to BLACK or WHITE per face. New example: `CelGallery`.
 - **Full implementation of the locked API — the library renders.** `TD_Renderer` runs the
   complete multi-object pipeline (transform → project → per-triangle cull → one global
   painter sort with deterministic tie-breaks → Gouraud shade → span rasterization), plus

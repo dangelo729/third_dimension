@@ -23,9 +23,10 @@ porting a PC engine.
   focal-length code.
 - A proven pipeline: transform → project → per-triangle back-face cull → one global
   painter sort → Gouraud shade → span rasterization.
-- Three render modes (`TD_SHADED`, `TD_SOLID`, `TD_WIREFRAME`) on pluggable render
-  targets: 1-bit (with **10 switchable dither methods**), RGB565, Adafruit_GFX, or your
-  own subclass in 3 overrides — see the table below.
+- Four render modes (`TD_SHADED`, `TD_SOLID`, `TD_WIREFRAME`, and `TD_CEL` — banded
+  cel/toon shading with switchable outline ink) on pluggable render targets: 1-bit (with
+  **10 switchable dither methods**), RGB565, Adafruit_GFX, or your own subclass in 3
+  overrides — see the table below.
 - A complete asset pipeline: any OBJ (PicoCAD included) → `tools/obj2mesh.py` →
   flash-resident mesh header. Plus 7 procedural primitives.
 - Host-tested, with CI-pinned bit-exact golden frame hashes.
@@ -97,7 +98,7 @@ mesh (flash header or primitive)
   └─ TD_Object   position · rotation · scale · color · material
        └─ TD_Scene   camera (orbit / auto-fit) + light + object list
             └─ TD_Renderer   transform → project → cull → painter sort → Gouraud spans
-                 └─ TD_RenderTarget   plotShadeSpan()  ← the seam, crossed once per span
+                 └─ TD_RenderTarget   plotShadeSpan()  ← the seam, crossed once per (sub-)span
                       └─ your display push (display.display(), writePixels, ...)
 ```
 
@@ -109,7 +110,9 @@ mesh (flash header or primitive)
 - **The camera stores intent** (fit-scene, fit-radius, a FOV, or a raw focal) and resolves
   it against the target's dimensions at render time.
 - **Render modes** are set on the scene; the target decides pixels. `TD_SHADED` is
-  dithered on 1-bit targets and modulates per-object color on RGB565.
+  dithered on 1-bit targets and modulates per-object color on RGB565. `TD_CEL` quantizes
+  lit fills to flat bands after interpolation — the renderer may split a geometric span
+  into several flat sub-spans, each crossing the seam once.
 - **`render()` returns `bool`** so sketches read forward; a failure's reason is in
   `scene.lastStatus()` (`TD_ERR_ALLOC`, `TD_ERR_BAD_CAMERA`, ...).
 - **Deeper reference.** The full pipeline walk-through is in
@@ -152,6 +155,28 @@ stable forever:
 The eight ordered methods are pure per-pixel functions (animation-stable); the two
 diffusion methods look smoother but crawl under motion and need an 8 B/pixel buffer.
 
+## Cel shading
+
+`TD_CEL` quantizes the Gouraud lighting into flat bands — after interpolation, so band
+boundaries curve smoothly across faces — and outlines true face edges in switchable ink.
+On a 1-bit display every band becomes one uniform, screen-locked dither pattern: the
+manga-screentone / classic-Mac look, with band interiors bit-stable under motion (pair it
+with the ordered dither methods; diffusion reflows band interiors). On RGB565 the same
+mechanism yields exact N-step flat color — the classic toon ramp.
+
+```cpp
+scene.setAmbient(0.30f);        // lift the darkest band clear of the black background
+scene.setRenderMode(TD_CEL);    // 4 bands, black ink — tune below if wanted
+scene.setCelBands(3);           // 2..8 uniform bands spanning [ambient, 1.0]
+scene.setCelInk(TD_CEL_INK_WHITE);  // black / white / none; white pops on dark OLEDs
+```
+
+The darkest band sits at the ambient floor, so on the default dark background raise
+`setAmbient` to ~0.25–0.35 (or use white ink) to keep the shadow side readable. Outlines
+are all true edges — the hand-drawn look — not silhouette-only; `TD_CEL_INK_NONE` gives
+pure screentone bands. See `CelGallery` and [`extras/docs/limits.md`](extras/docs/limits.md)
+for band-count vs dither-method guidance.
+
 ## Bring in your own models
 
 ```
@@ -181,6 +206,7 @@ no flags (export OBJ, not the raw `.txt`). Flags and pipeline internals are in
 | `SolarSystem` | multi-object scenes and painter occlusion |
 | `ImportedModel` | a converted OBJ; a button cycles dither methods |
 | `DitherGallery` | auto-cycles all 10 methods, names over Serial |
+| `CelGallery` | cel shading: band counts, ink styles, and the ordered dithers on a torus |
 | `ColorCube_SSD1331` | the RGB565 framebuffer path with a burst push |
 | `CustomTarget_NoGFX` | a raw pixel-callback target with zero dependencies |
 

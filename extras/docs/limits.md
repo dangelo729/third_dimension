@@ -64,6 +64,31 @@ Invisible at 128×64; on large, close-up triangles at 320×240 the gradient
 bends slightly across the face. Tessellating large faces hides it.
 Perspective-correct interpolation is not implemented.
 
+## Cel shading (TD_CEL)
+
+- **Band count clamps to 2..`TD_CEL_MAX_BANDS`** (8). `setCelBands(0)` and
+  `(1)` become 2; anything above 8 becomes 8.
+- **Zero added RAM.** Banding adds ~10 B of renderer state and no per-pixel,
+  per-face, or per-edge buffers; disabled modes pay one predictable branch
+  per span.
+- **Per-span split cost:** two band classifications (≤ 7 compares each) plus
+  one extra `fillSpan` emission per threshold crossing — typically 0–1 per
+  span at 4 bands, at most `bands − 1`. Ink cost equals TD_SOLID's existing
+  outline pass.
+- **Band count vs dither levels:** a band is only visible if the active
+  dither method can distinguish its duty cycle. BAYER2 carries 5 levels, so
+  more than ~5 bands collapse under it; at 128×64 keep bands ≤ 6. The two
+  diffusion methods render band fields with the 1.0 top band hard-on but
+  mid-band interiors still reflow under motion — pair cel with the ordered
+  methods for the stable screentone look.
+- **Dark-background readability:** the darkest band sits at the ambient
+  floor; at the default 0.15 it dithers close to the auto-cleared black
+  background. Raise `setAmbient` to ~0.25–0.35 or use `TD_CEL_INK_WHITE`.
+- **Ambient near 1.0:** within a few ulps of 1.0 a band threshold can round
+  to exactly 1.0f, leaving the top band unreachable — a harmless
+  degradation. At ambient ≥ 1 banding disables entirely and TD_CEL renders
+  flat-lit.
+
 ## Diffusion dither buffers (TD_MonoTarget)
 
 The FLOYD/ATKINSON methods buffer the whole frame as floats: two w×h

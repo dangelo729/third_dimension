@@ -1,7 +1,7 @@
 {
   "name": "ThirdDimension",
   "version": "0.1.0",
-  "description": "Tiny scene-based 3D renderer for 32-bit microcontrollers, in the spirit of Adafruit GFX. Scene, orbit/auto-fit camera, directional light, OBJ-converted meshes or procedural primitives, painter-sorted Gouraud shading, and ten switchable 1-bit dither methods. Requires hardware float; not for AVR.",
+  "description": "Tiny scene-based 3D renderer for 32-bit microcontrollers, in the spirit of Adafruit GFX. Scene, orbit/auto-fit camera, directional light, OBJ-converted meshes or procedural primitives, painter-sorted Gouraud shading, cel (toon) shading with banded fills and switchable outline ink, and ten switchable 1-bit dither methods. Requires hardware float; not for AVR.",
   "keywords": [
     "3d",
     "graphics",
@@ -12,6 +12,8 @@
     "dithering",
     "mesh",
     "gouraud",
+    "cel",
+    "toon",
     "wireframe"
   ],
   "repository": {
