@@ -24,4 +24,5 @@ scratch-*/
 # plan documents and AI-assistant config: local working notes, never committed
 PLAN.md
 *PLAN*.md
+plans/
 CLAUDE.md
