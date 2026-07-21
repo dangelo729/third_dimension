@@ -5,9 +5,18 @@
 #include "TD_Camera.h"
 #include "TD_Math.h"
 
+class TD_Scene;
+class TD_Renderer;
+
 // one directional light, stored as a world-space unit vector pointing from
 // surfaces toward the light. a corner is lit when dot(n_world, L) > 0; the
 // shade formula is clamp(ambient + (1 - ambient) * diff * intensity).
+// a scene shades with its built-in scene.light (the key light) plus any
+// lights added via TD_Scene::addLight; per-light terms sum in add order and
+// the result clamps at 1.0. added lights are user-owned and linked
+// intrusively, like objects. do not copy or assign a light while it is
+// linked into a scene: the copy duplicates (or overwrites) the list link
+// and silently corrupts the chain.
 // defaults (az 0.7, el 0.45: an upper-left key light) mean a default scene
 // shades correctly with zero light code.
 class TD_Light {
@@ -37,6 +46,10 @@ class TD_Light {
  private:
   TD_Vec3 dir_;
   float intensity_ = 1.0f;
+  TD_Light *next_ = nullptr;  // intrusive scene-list link
+
+  friend class TD_Scene;
+  friend class TD_Renderer;
 };
 
 #endif  // TD_LIGHT_H

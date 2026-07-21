@@ -13,6 +13,16 @@ releases may break API; breaks are called out under a "Breaking" heading.
 
 ### Added
 
+- **Multiple directional lights: `TD_Scene::addLight` / `removeLight` /
+  `firstExtraLight`.** Extra user-owned `TD_Light` objects join the scene intrusively —
+  allocation-free, uncapped, one scene at a time, the same membership contract as
+  `TD_Object` — while `scene.light` remains the always-shading key light. Per lit
+  corner the shade sums the key light **first**, then the added lights in add order
+  (the summation order is documented API), with one clamp at 1.0; cel quantizes the
+  summed result. **No existing golden pins moved** — with no lights added the
+  added-light loop is empty (one null compare). New pins: `GOLDEN_TWO_LIGHT` and
+  `GOLDEN_TWO_LIGHT_CEL`. `sizeof(TD_Light)` grows 16 → 20 bytes on 32-bit targets (one
+  intrusive pointer). The `SolarSystem` example gains a rim light.
 - **Cel (toon) shading: the `TD_CEL` render mode.** Gouraud lighting quantized *after*
   interpolation into 2–8 flat bands spanning `[ambient, 1.0]` (`setCelBands`, default 4),
   plus switchable true-edge outline ink (`setCelInk`: `TD_CEL_INK_BLACK` default /

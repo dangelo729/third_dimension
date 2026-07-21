@@ -15,8 +15,10 @@
 // the floating-point expression shapes in the transform, projection, and
 // shading blocks below are pinned by bit-exact golden frame tests. translation
 // is added after the full rotation dot products; projection multiplies before
-// it divides; the shade formula evaluates left to right. an algebraically
-// equivalent rewrite is a behavioral change here.
+// it divides; the shade formula evaluates left to right, and each added
+// light's term ((1.0f - ambient) * d * el->intensity_, summed after the key
+// light in add order) is a pinned shape too. an algebraically equivalent
+// rewrite is a behavioral change here.
 
 TD_Renderer::TD_Renderer() {
   // all members carry in-class defaults; working buffers stay null until the
@@ -327,6 +329,9 @@ void TD_Renderer::drawFrame(const TD_Scene &scene, const TD_Camera &camera,
   // shade + draw back-to-front
   const TD_Vec3 L = scene.light.direction();
   const float lightIntensity = scene.light.intensity();
+  // added lights: the list head, read once per frame beside the other scene
+  // latches; the chain is walked per lit corner in add order.
+  const TD_Light *extraLights = scene.firstExtraLight();
   const float ambient = scene.ambient();
 
   // cel banding applies only to LIT gouraud fills; ambient >= 1 collapses
@@ -372,7 +377,9 @@ void TD_Renderer::drawFrame(const TD_Scene &scene, const TD_Camera &camera,
         // corner shades: 2.0 saturates every dither (solid fill, white);
         // 0.0 never lights (black); lit in shaded and cel modes gets Gouraud
         // clamp(ambient + (1 - ambient) * max(0, n·L) * intensity) with the
-        // normal rotated by the object rotation only (world-space shading).
+        // normal rotated by the object rotation only (world-space shading),
+        // plus, per added light, (1 - ambient) * max(0, n·Li) * intensity_i,
+        // summed in add order before the clamp.
         // cel keeps the corner shades continuous — quantization happens per
         // span, after interpolation, in celFillSpan.
         float sh[3] = {2.0f, 2.0f, 2.0f};
@@ -388,6 +395,13 @@ void TD_Renderer::drawFrame(const TD_Scene &scene, const TD_Camera &camera,
             float diff = nx * L.x + ny * L.y + nz * L.z;
             if (diff < 0.0f) diff = 0.0f;
             float lit = ambient + (1.0f - ambient) * diff * lightIntensity;
+            // each added light contributes its own clamped diffuse term, in
+            // add order; the loop is empty when no lights were added.
+            for (const TD_Light *el = extraLights; el; el = el->next_) {
+              float d = nx * el->dir_.x + ny * el->dir_.y + nz * el->dir_.z;
+              if (d < 0.0f) d = 0.0f;
+              lit += (1.0f - ambient) * d * el->intensity_;
+            }
             sh[k] = lit > 1.0f ? 1.0f : lit;
           }
         }

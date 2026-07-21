@@ -45,6 +45,8 @@ render	KEYWORD2
 renderPass	KEYWORD2
 add	KEYWORD2
 remove	KEYWORD2
+addLight	KEYWORD2
+removeLight	KEYWORD2
 setPosition	KEYWORD2
 setRotation	KEYWORD2
 setScale	KEYWORD2
@@ -65,6 +67,7 @@ lastDrawCount	KEYWORD2
 lastNearSkipCount	KEYWORD2
 renderer	KEYWORD2
 firstObject	KEYWORD2
+firstExtraLight	KEYWORD2
 setDither	KEYWORD2
 dither	KEYWORD2
 ditherName	KEYWORD2

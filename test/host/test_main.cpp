@@ -83,6 +83,7 @@ int main() {
   runRenderTests();
   runCelTests();
   runPrimitiveTests();
+  runLightTests();
 
   if (failures == 0)
     std::printf("\nALL CHECKS PASSED\n");

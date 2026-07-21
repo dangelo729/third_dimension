@@ -20,6 +20,9 @@
 // capacity cap. one object belongs to at most one scene at a time (add() of an
 // already-linked object is a no-op); an object must outlive its scene
 // membership.
+//
+// lights: the built-in key light plus user-owned fills added via addLight,
+// linked intrusively like objects.
 class TD_Scene {
  public:
   TD_Camera camera;  // scene.camera.setOrbit(...), auto-fit by default
@@ -27,6 +30,16 @@ class TD_Scene {
 
   void add(TD_Object &obj);
   void remove(TD_Object &obj);
+
+  // extra directional lights beyond scene.light (the key light), user-owned
+  // and linked intrusively like objects: addLight() stores a pointer and
+  // threads TD_Light::next_, so light membership allocates nothing and has
+  // no capacity cap. shading sums scene.light first, then added lights in
+  // add order. one light belongs to at most one scene at a time (addLight()
+  // of an already-linked light is a no-op); a light must outlive its scene
+  // membership. scene.light itself is never in this list and cannot be added.
+  void addLight(TD_Light &l);
+  void removeLight(TD_Light &l);
 
   void setAmbient(float a) { ambient_ = a; }  // 0..1 shade floor; default 0.15
   float ambient() const { return ambient_; }
@@ -52,8 +65,12 @@ class TD_Scene {
   // scene-list access for the renderer and tests.
   const TD_Object *firstObject() const { return head_; }
 
+  // light-list access for the renderer and tests.
+  const TD_Light *firstExtraLight() const { return lightHead_; }
+
  private:
   TD_Object *head_ = nullptr;
+  TD_Light *lightHead_ = nullptr;
   float ambient_ = 0.15f;
   TD_Renderer renderer_;
 

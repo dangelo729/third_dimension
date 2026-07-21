@@ -83,7 +83,9 @@ Renderer guarantees to the target:
   TD_CEL black ink arrive as exactly `0.0`; WHITE faces, SOLID fills,
   WIREFRAME lines, and TD_CEL white ink as `2.0` (saturated past every
   threshold); LIT Gouraud shades are clamped to `[ambient, 1.0]`, and TD_CEL
-  band levels arrive within that range as exact slope-0 spans.
+  band levels arrive within that range as exact slope-0 spans. The
+  `[ambient, 1.0]` range assumes nonnegative light intensities; a negative
+  intensity can push LIT shades below ambient — targets must tolerate that.
 
 Target guarantees to the renderer:
 

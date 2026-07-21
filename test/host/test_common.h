@@ -73,5 +73,6 @@ void runDitherTests();
 void runRenderTests();
 void runCelTests();
 void runPrimitiveTests();
+void runLightTests();
 
 #endif  // TD_TEST_COMMON_H

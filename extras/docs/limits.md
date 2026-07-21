@@ -64,6 +64,23 @@ Invisible at 128×64; on large, close-up triangles at 320×240 the gradient
 bends slightly across the face. Tessellating large faces hides it.
 Perspective-correct interpolation is not implemented.
 
+## Added lights
+
+Extra directional lights (`TD_Scene::addLight`) cost per-corner arithmetic
+plus one list pointer per light:
+
+- **Per-corner cost:** each added light adds, per lit corner, per frame, one
+  3-multiply/2-add dot product, one compare/clamp, two multiplies and one
+  add, plus one pointer chase.
+- **Zero renderer RAM.** No snapshot array, no per-frame buffer — the whole
+  feature costs 4 bytes per `TD_Light` and 4 bytes per scene on 32-bit
+  targets.
+- **Uncapped, like the object list:** hundreds of lights slow the corner
+  loop linearly. Real scenes use 1–3.
+- Should the pointer chase ever measure badly, a per-frame flat-array
+  snapshot inside the renderer is a bit-invisible pure optimization — same
+  floats, same arithmetic, same order. Available, not built.
+
 ## Cel shading (TD_CEL)
 
 - **Band count clamps to 2..`TD_CEL_MAX_BANDS`** (8). `setCelBands(0)` and

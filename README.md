@@ -18,9 +18,9 @@ porting a PC engine.
 
 **It is:**
 
-- A scene API — `TD_Scene` + `TD_Object` + `TD_Camera` (orbit, look-at, auto-fit) + one
-  directional `TD_Light` — so the minimal sketch is ~20 lines with no camera, light, or
-  focal-length code.
+- A scene API — `TD_Scene` + `TD_Object` + `TD_Camera` (orbit, look-at, auto-fit) +
+  directional `TD_Light`s (a default key light; `scene.addLight(...)` for more) — so
+  the minimal sketch is ~20 lines with no camera, light, or focal-length code.
 - A proven pipeline: transform → project → per-triangle back-face cull → one global
   painter sort → Gouraud shade → span rasterization.
 - Four render modes (`TD_SHADED`, `TD_SOLID`, `TD_WIREFRAME`, and `TD_CEL` — banded
@@ -96,7 +96,7 @@ Include exactly one umbrella header per sketch:
 ```
 mesh (flash header or primitive)
   └─ TD_Object   position · rotation · scale · color · material
-       └─ TD_Scene   camera (orbit / auto-fit) + light + object list
+       └─ TD_Scene   camera (orbit / auto-fit) + key light (+ added lights) + object list
             └─ TD_Renderer   transform → project → cull → painter sort → Gouraud spans
                  └─ TD_RenderTarget   plotShadeSpan()  ← the seam, crossed once per (sub-)span
                       └─ your display push (display.display(), writePixels, ...)
@@ -177,6 +177,22 @@ are all true edges — the hand-drawn look — not silhouette-only; `TD_CEL_INK_
 pure screentone bands. See `CelGallery` and [`extras/docs/limits.md`](extras/docs/limits.md)
 for band-count vs dither-method guidance.
 
+## More lights
+
+```cpp
+TD_Light fill;                     // user-owned, like objects
+
+void setup() {
+  fill.setDirection(-2.4f, 0.3f);  // az, el (radians): roughly opposite the key light
+  fill.setIntensity(0.5f);
+  scene.addLight(fill);
+}
+```
+
+Each added light costs a little per lit corner every frame, so two or three is the sweet
+spot. `scene.light` always shades; added lights sum after it in add order — silence any
+light with `setIntensity(0)`. Fills and rims read well at 0.3–0.8 intensity.
+
 ## Bring in your own models
 
 ```
@@ -247,10 +263,10 @@ are CI-pinned and require `-ffp-contract=off`. CI also compiles every example fo
 ## Roadmap (v1 non-goals)
 
 Deliberately out of scope for v1, in rough roadmap order: z-buffer target · real
-near-plane clipping (v1 skips whole faces at `nearSkip`) · textures/UVs · point/multiple
-lights · quaternions · non-uniform scale · perspective-correct interpolation · animation
-clips · packed 1-bit mono framebuffer target · compressed diffusion buffers ·
-arena/user-buffer allocation · runtime OBJ loading. AVR support: never.
+near-plane clipping (v1 skips whole faces at `nearSkip`) · textures/UVs · point lights ·
+quaternions · non-uniform scale · perspective-correct interpolation · animation clips ·
+packed 1-bit mono framebuffer target · compressed diffusion buffers · arena/user-buffer
+allocation · runtime OBJ loading. AVR support: never.
 
 ## Versioning
 

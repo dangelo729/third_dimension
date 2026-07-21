@@ -81,8 +81,18 @@ is nonzero, back the camera off or shrink the near-skip. See `limits.md`.
 
 ## R7 — TD_Light stores a world-space unit vector TOWARD the light
 
-The vector points from surfaces to the light source; a corner is lit when
-`dot(n_world, L) > 0`. `setDirection(azimuth, elevation)` builds
+The vector points from surfaces to the light source; a corner is lit by a
+light when `dot(n_world, L) > 0`. The convention applies to every light
+identically: `scene.light` (the key light) and each light added via
+`addLight` all store a world-space unit vector pointing toward the light.
+Shade is the clamped sum over every light,
+
+```
+shade = clamp(ambient + Σᵢ (1 − ambient)·max(0, n·Lᵢ)·intensityᵢ, ≤ 1.0)
+```
+
+summed in a fixed order: the key light first, then added lights in add
+order. `setDirection(azimuth, elevation)` builds
 
 ```
 L = ( −sin(az)·cos(el),  sin(el),  −cos(az)·cos(el) )
@@ -96,4 +106,5 @@ light at any pose.
 
 *If you assume otherwise:* passing "the direction the light travels" (the
 other common convention) into `setDirectionVector` lights the model from
-the opposite side — the classic everything-is-backlit-and-dim bug.
+the opposite side — the classic everything-is-backlit-and-dim bug. And
+assuming light order is free: the sum is float, and its order is API.

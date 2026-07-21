@@ -16,6 +16,7 @@ TD_GFXMonoTarget target(display);
 
 TD_SphereMesh sphereMesh(12, 8);  // one mesh, shared by all three objects
 TD_Object sun(sphereMesh), earth(sphereMesh), mars(sphereMesh);
+TD_Light rim;
 TD_Scene scene;
 
 const float EARTH_ORBIT = 1.8f;  // world units
@@ -35,7 +36,10 @@ void setup() {
   scene.add(mars);
 
   scene.setAmbient(0.10f);                // deep-space shadows
-  scene.light.setDirection(0.4f, 0.3f);   // one directional key light (az, el, radians)
+  scene.light.setDirection(0.4f, 0.3f);   // the key light (az, el, radians)
+  rim.setDirection(-2.4f, 0.15f);         // added lights sum with scene.light, clamped at 1
+  rim.setIntensity(0.35f);
+  scene.addLight(rim);
   scene.camera.setOrbit(0.0f, 0.35f);     // look down onto the orbital plane (radians)
   scene.camera.fitRadius(MARS_ORBIT + 0.3f);  // frame the outer orbit, world units
 }

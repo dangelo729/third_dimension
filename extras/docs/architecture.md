@@ -9,7 +9,8 @@ lives in, and the invariants that hold at every stage.
 sketch            geometry (TD_Mesh: primitives, converted models)
                   TD_Object  (mesh* + position/rotation/scale/color/material)
                   TD_Scene ── camera: TD_Camera (orbit + auto-fit)
-                           ── light:  TD_Light  (world-space directional)
+                           ── lights: scene.light (key) + added TD_Lights
+                                      (world-space directional)
                            ── objects: intrusive linked list
                         scene.render(target)
                               │
@@ -71,9 +72,9 @@ One `scene.render(target)` call performs, in order:
    the face's material, mode, and owning object's base color; then per front
    triangle the three corner shades — BLACK → 0.0, WHITE and SOLID fills → 2.0
    (saturates every dither), LIT under `TD_SHADED` or `TD_CEL` → Gouraud
-   `clamp(ambient + (1 − ambient) · max(0, n·L) · intensity)` with the normal
-   rotated to world space. Cel keeps corner shades continuous — quantization
-   happens per span, after interpolation (stage 8). The scanline fill samples
+   `clamp(ambient + Σᵢ (1 − ambient) · max(0, n·Lᵢ) · intensityᵢ, ≤ 1.0)`
+   with the normal rotated to world space. Cel keeps corner shades
+   continuous — quantization happens per span, after interpolation (stage 8). The scanline fill samples
    pixel centers and is half-open right/bottom, so adjacent triangles neither
    crack nor double-draw.
 8. **Spans.** Each scanline segment clamps to the viewport and crosses the seam
@@ -139,7 +140,8 @@ contract (G1–G3 / T1–T3) is specified in `render-targets.md`. Two invariants
 belong to the pipeline itself:
 
 - **Frames are deterministic.** The painter sort's trailing tie-breaks make the
-  drawn frame a pure function of scene state on every libc (stage 6).
+  drawn frame a pure function of scene state on every libc (stage 6), and the
+  light sum runs in a fixed order (key light, then add order).
 - **Decals draw in order.** Decal faces draw after all body faces of all
   objects, ordered among themselves by stacking layer — a decal is never erased
   by its own object's neighboring faces. (The cross-object envelope of this rule
