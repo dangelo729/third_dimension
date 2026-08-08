@@ -850,11 +850,14 @@ function parseProjectText(text) {
 function partWorldGeometry(part) {
   const mesh = generate(part.type, part.params);
   if (mesh.nverts === 0) return null;
-  // molding: displace along smooth welded normals, then swap the stale
-  // analytic normals for converter-style creased ones. generate() built
-  // fresh arrays, so the in-place edits touch nothing shared.
+  // molding: keep the pre-displacement positions (new dabs anchor to the
+  // base surface — see raycastMoldSurface), displace along smooth welded
+  // normals, then swap the stale analytic normals for converter-style
+  // creased ones. generate() built fresh arrays, so the in-place edits
+  // touch nothing shared.
   const dabs = moldedDabs(part);
   if (dabs) {
+    mesh.baseVerts = mesh.verts.map((v) => v.slice());
     applyMold(mesh, dabs);
     recomputeCreasedNormals(mesh);
   }
@@ -910,6 +913,12 @@ function shadeOf(nWorld) {
 // tessellation, rides the part's transform, and diffs in git as dabs.
 // Verts sharing a position share a normal and a displacement, so closed
 // meshes stay closed.
+// Dab centers live on the BASE (un-displaced) surface: falloff is measured
+// against the generated positions, before any displacement, so a dab
+// stored at the displaced surface would sit out of falloff reach of the
+// very verts under it once a region is sculpted deeper than the brush
+// radius. raycastMoldSurface pulls every brush hit back to base before it
+// is stored.
 
 // C1 falloff: 1 at the center easing to 0 at the rim (inverted smoothstep).
 function moldFalloff(t) {
@@ -1035,6 +1044,56 @@ function recomputeCreasedNormals(mesh) {
 function moldedDabs(part) {
   return part.mold && Array.isArray(part.mold.dabs) && part.mold.dabs.length
       ? part.mold.dabs : null;
+}
+
+// Möller–Trumbore; returns { t, u, v } (ray parameter + barycentrics on
+// b and c) or null for a miss, a parallel ray, or a hit behind the origin
+function rayTriUV(o, d, a, b, c) {
+  const e1x = b[0] - a[0], e1y = b[1] - a[1], e1z = b[2] - a[2];
+  const e2x = c[0] - a[0], e2y = c[1] - a[1], e2z = c[2] - a[2];
+  const px = d[1] * e2z - d[2] * e2y,
+        py = d[2] * e2x - d[0] * e2z,
+        pz = d[0] * e2y - d[1] * e2x;
+  const det = e1x * px + e1y * py + e1z * pz;
+  if (Math.abs(det) < 1e-12) return null;
+  const inv = 1 / det;
+  const tx = o[0] - a[0], ty = o[1] - a[1], tz = o[2] - a[2];
+  const u = (tx * px + ty * py + tz * pz) * inv;
+  if (u < 0 || u > 1) return null;
+  const qx = ty * e1z - tz * e1y,
+        qy = tz * e1x - tx * e1z,
+        qz = tx * e1y - ty * e1x;
+  const v = (d[0] * qx + d[1] * qy + d[2] * qz) * inv;
+  if (v < 0 || u + v > 1) return null;
+  const t = (e2x * qx + e2y * qy + e2z * qz) * inv;
+  return t > 1e-6 ? { t, u, v } : null;
+}
+
+// nearest ray hit on a part's world geometry (a partWorldGeometry result):
+// { t, point, baseLocal }. point is the hit on the live displaced surface;
+// baseLocal re-applies the hit triangle's barycentrics to the pre-mold
+// LOCAL verts (the affine part transform preserves barycentrics), giving
+// the base-surface point that generated what's under the cursor — the only
+// place a new dab may anchor (see the section comment above).
+function raycastMoldSurface(geo, ray) {
+  const { mesh, wverts } = geo;
+  const o = ray.origin, d = ray.dir;
+  let best = null, bestTri = null;
+  for (const t of mesh.tris) {
+    const h = rayTriUV(o, d, wverts[t[0]], wverts[t[1]], wverts[t[2]]);
+    if (h && (!best || h.t < best.t)) { best = h; bestTri = t; }
+  }
+  if (!best) return null;
+  const BV = mesh.baseVerts || mesh.verts;
+  const a = BV[bestTri[0]], b = BV[bestTri[1]], c = BV[bestTri[2]];
+  const w = 1 - best.u - best.v;
+  return {
+    t: best.t,
+    point: [o[0] + d[0] * best.t, o[1] + d[1] * best.t, o[2] + d[2] * best.t],
+    baseLocal: [w * a[0] + best.u * b[0] + best.v * c[0],
+                w * a[1] + best.u * b[1] + best.v * c[1],
+                w * a[2] + best.u * b[2] + best.v * c[2]],
+  };
 }
 
 // ---- mesh validation (td_validateMesh port + converter volume check) ------
@@ -1438,6 +1497,7 @@ return {
   // geometry / preview / bake
   partWorldGeometry, partWorldAABB, overlapPairs,
   moldFalloff, applyMold, recomputeCreasedNormals, moldedDabs,
+  raycastMoldSurface,
   AMBIENT, LIGHT_DIR, shadeOf,
   validateMeshJS, signedVolume, countsOf, budgetOf, CAP_U16, CAP_TRIS,
   bake, emitHeader, cIdentifier, fileStem, fmtFixed,
@@ -2197,11 +2257,13 @@ function drawGumball(ctx, gb, active) {
 
 // ---- molding brush --------------------------------------------------------
 // the mold tool paints dabs onto the SELECTED part: raycast the cursor onto
-// the live (already-displaced) surface, drop a dab at the local-space hit,
-// and let the core's displacement field do the rest. A drag is a stroke —
-// dabs land every quarter-brush of surface travel. Alt indents instead of
-// extruding (sampled at mousedown, like every drag kind). One stroke = one
-// undo gesture through the shared drag machinery.
+// the live (already-displaced) surface, pull the hit back to the BASE
+// surface (hit.baseLocal — dabs must anchor where applyMold measures
+// falloff, or sculpted regions outrun the brush and go dead), and let the
+// core's displacement field do the rest. A drag is a stroke — dabs land
+// every quarter-brush of surface travel, spaced on the live surface. Alt
+// indents instead of extruding (sampled at mousedown, like every drag
+// kind). One stroke = one undo gesture through the shared drag machinery.
 
 const len3 = (v) => Math.hypot(v[0], v[1], v[2]);
 
@@ -2213,59 +2275,29 @@ function panelRay(p, cam, mx, my) {
            dir: p.forward.slice() };
 }
 
-// Möller–Trumbore; returns the ray parameter t or null
-function rayTriT(o, d, a, b, c) {
-  const e1 = sub3(b, a), e2 = sub3(c, a);
-  const pv = cross3(d, e2);
-  const det = dot3(e1, pv);
-  if (Math.abs(det) < 1e-12) return null;
-  const inv = 1 / det;
-  const tv = sub3(o, a);
-  const u = dot3(tv, pv) * inv;
-  if (u < 0 || u > 1) return null;
-  const qv = cross3(tv, e1);
-  const v = dot3(d, qv) * inv;
-  if (v < 0 || u + v > 1) return null;
-  const t = dot3(e2, qv) * inv;
-  return t > 1e-6 ? t : null;
-}
-
+// nearest hit on the part's live surface; the hit also carries baseLocal,
+// the pull-back to the un-displaced surface where dabs anchor (core
+// raycastMoldSurface)
 function raycastPartWorld(part, ray) {
   const entry = getGeo(part);
-  if (!entry.geo) return null;
-  const { mesh, wverts } = entry.geo;
-  let best = null;
-  for (const t of mesh.tris) {
-    const tt = rayTriT(ray.origin, ray.dir, wverts[t[0]], wverts[t[1]], wverts[t[2]]);
-    if (tt !== null && (best === null || tt < best)) best = tt;
-  }
-  return best === null ? null : { t: best, point: add3(ray.origin, mul3(ray.dir, best)) };
-}
-
-// inverse of the part transform: local = diag(1/s)·Rᵀ·(w − pos)
-function worldToLocalPoint(part, w) {
-  const R = C.eulerXYZ(part.rotation[0], part.rotation[1], part.rotation[2]);
-  const d = sub3(w, part.position);
-  return [(R[0] * d[0] + R[3] * d[1] + R[6] * d[2]) / part.scale[0],
-          (R[1] * d[0] + R[4] * d[1] + R[7] * d[2]) / part.scale[1],
-          (R[2] * d[0] + R[5] * d[1] + R[8] * d[2]) / part.scale[2]];
+  return entry.geo ? C.raycastMoldSurface(entry.geo, ray) : null;
 }
 
 function round6(v) { return Math.round(v * 1e6) / 1e6; }
 
-function applyMoldDab(d, worldPt) {
+function applyMoldDab(d, hit) {
   const part = d.part;
   if (!part.mold || !Array.isArray(part.mold.dabs)) part.mold = { dabs: [] };
   // brush size/strength are world units; dabs live in local space — convert
   // by the mean scale (slightly anisotropic under non-uniform scale)
   const m = (part.scale[0] + part.scale[1] + part.scale[2]) / 3;
-  const local = worldToLocalPoint(part, worldPt);
+  const local = hit.baseLocal;
   part.mold.dabs.push({
     at: [round6(local[0]), round6(local[1]), round6(local[2])],
     r: Math.max(1e-4, round6(brushSize / m)),
     s: round6((d.invert ? -1 : 1) * brushStrength / m),
   });
-  d.lastDabAt = worldPt;
+  d.lastDabAt = hit.point;
   d.mutated = true;
   touch(part);
   invalidate();
@@ -2297,7 +2329,7 @@ function beginMoldDrag(p, cam, part, hit, e) {
   const d = { kind: "mold", panel: p, cam, part,
               preState: snapshot(), mutated: false,
               lastDabAt: null, invert: e.altKey };
-  applyMoldDab(d, hit.point);
+  applyMoldDab(d, hit);
   d.timer = setInterval(() => {
     if (drag !== d) { clearInterval(d.timer); return; }
     accumulateLastDab(d);
@@ -2842,7 +2874,7 @@ function updateDrag(e) {
     const hit = raycastPartWorld(d.part, ray);
     if (hit) {
       if (!d.lastDabAt || len3(sub3(hit.point, d.lastDabAt)) >= brushSize * 0.25)
-        applyMoldDab(d, hit.point);
+        applyMoldDab(d, hit);
     }
     moldCursor = computeMoldCursor(p, d.cam || null, mx, my);
     invalidate();
