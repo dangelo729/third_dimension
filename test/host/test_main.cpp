@@ -85,6 +85,7 @@ int main() {
   runPrimitiveTests();
   runLightTests();
   runOutlineTests();
+  runExportFixtureTests();
 
   if (failures == 0)
     std::printf("\nALL CHECKS PASSED\n");

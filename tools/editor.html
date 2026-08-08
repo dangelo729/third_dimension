@@ -1,0 +1,3382 @@
+<!DOCTYPE html>
+<!-- SPDX-License-Identifier: MIT -->
+<!--
+  TD editor — browser composite-model editor for third_dimension.
+
+  A single bare HTML file, no build step, no dependencies: place the
+  library's eight primitives, arrange them against a snap grid in a
+  PicoCAD-style four-panel view, and export the scene as one flash-resident
+  TD mesh format 1 header (the same frozen format tools/obj2mesh.py emits).
+  The exported header embeds the editable project JSON as a trailing comment
+  block, so a received header is never a dead end — open it right back up
+  here. The .json project file is the git truth; the header is a build
+  artifact.
+
+  Open tools/editor.html in any browser. Open it with #dev appended for the
+  generator parity page (diffs the JS primitive ports against
+  extras/dev/dump_primitives.cpp output).
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TD editor</title>
+<style>
+/* style tokens: the two locked hues plus two tones derived from them
+   (ink = darkened secondary for text/wireframes, paper = light top of the
+   monochrome shade ramp). UI stays inside these four. */
+:root {
+  --primary: #C8CBA9;
+  --secondary: #A99E58;
+  --ink: #3F3B22;
+  --paper: #F2F1E6;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+html, body { height: 100%; }
+body {
+  background: var(--primary);
+  color: var(--ink);
+  font-family: "Times New Roman", Times, serif;
+  font-size: 13px;
+  overflow: hidden;
+}
+#app { display: flex; height: 100%; }
+
+/* narrow left column: primitive menu above the numeric panel */
+#left {
+  width: 148px;
+  min-width: 148px;
+  border-right: 1px solid var(--secondary);
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+}
+#left h1 {
+  font-size: 13px;
+  font-weight: bold;
+  padding: 5px 8px 3px;
+  letter-spacing: 0.04em;
+}
+#prims { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; padding: 4px 8px 8px; }
+#left .lhead { font-weight: bold; padding: 3px 8px 1px; letter-spacing: 0.03em; }
+#tools { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; padding: 4px 8px 8px; }
+#brush { grid-column: 1 / -1; }
+#brush .brow { padding: 3px 0 1px; }
+#brush .brow label { display: block; padding-bottom: 1px; }
+#brush input[type="range"] {
+  -webkit-appearance: none;
+  appearance: none;
+  display: block;
+  width: 100%;
+  height: 4px;
+  margin: 4px 0;
+  background: var(--secondary);
+  border: none;
+  border-radius: 2px;
+  outline: none;
+  padding: 0;
+}
+#brush input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  background: var(--primary);
+  border: 1px solid var(--secondary);
+  box-sizing: border-box;
+  cursor: pointer;
+}
+#brush input[type="range"]::-moz-range-thumb {
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  background: var(--primary);
+  border: 1px solid var(--secondary);
+  box-sizing: border-box;
+  cursor: pointer;
+}
+button {
+  font-family: inherit;
+  font-size: 12px;
+  color: var(--ink);
+  background: var(--primary);
+  border: 1px solid var(--secondary);
+  border-radius: 2px;
+  padding: 2px 6px;
+  cursor: pointer;
+}
+button:hover { background: var(--secondary); }
+button.armed { background: var(--secondary); font-weight: bold; }
+#left hr, #numpanel hr { border: none; border-top: 1px solid var(--secondary); margin: 2px 0 4px; }
+
+/* numeric panel for the selected part */
+#numpanel { padding: 2px 8px 10px; }
+#numpanel .nptitle { font-weight: bold; padding: 2px 0 3px; }
+#numpanel .nprow { display: flex; align-items: center; gap: 3px; padding: 1px 0; }
+#numpanel .nprow label { width: 44px; }
+#numpanel input {
+  font-family: inherit;
+  font-size: 12px;
+  color: var(--ink);
+  background: var(--paper);
+  border: 1px solid var(--secondary);
+  border-radius: 1px;
+  width: 100%;
+  min-width: 0;
+  padding: 0 3px;
+}
+#numpanel .nptriple input { width: 33%; }
+#numpanel .npsect { font-weight: bold; padding: 4px 0 1px; }
+
+/* main area: top strip over the four panels */
+#main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+#strip {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--secondary);
+  flex-wrap: wrap;
+}
+#strip .sep { width: 1px; align-self: stretch; background: var(--secondary); margin: 0 4px; }
+#budget { margin-left: auto; padding-left: 8px; white-space: nowrap; }
+#budget.hot { color: var(--secondary); font-weight: bold; }
+
+/* four panels: top | perspective / front | side; fullscreen swaps to one */
+#panels {
+  flex: 1;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  grid-template-rows: 1fr 1fr;
+  gap: 1px;
+  background: var(--secondary);
+  min-height: 0;
+}
+.panel { position: relative; background: var(--primary); overflow: hidden; }
+.panel canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+.panel .plabel {
+  position: absolute;
+  left: 4px;
+  bottom: 2px;
+  color: var(--secondary);
+  font-weight: bold;
+  pointer-events: none;
+}
+/* the reset-view dot in the perspective panel's top-left corner */
+#resetview {
+  position: absolute;
+  left: 6px;
+  top: 6px;
+  width: 9px;
+  height: 9px;
+  padding: 0;
+  border: 1px solid var(--secondary);
+  border-radius: 50%;
+  background: var(--secondary);
+  cursor: pointer;
+}
+#resetview:hover { background: var(--ink); border-color: var(--ink); }
+#panels.full { grid-template-columns: 1fr; grid-template-rows: 1fr; }
+#panels.full .panel { display: none; }
+#panels.full .panel.fullpanel { display: block; }
+.panel.armed { cursor: crosshair; }
+.panel.dragging { cursor: move; }
+
+/* dev parity page (#dev) */
+#dev { display: none; padding: 12px; overflow: auto; height: 100%; }
+#dev.on { display: block; }
+#dev h1 { font-size: 15px; padding-bottom: 6px; }
+#dev p { padding: 2px 0; }
+#dev table { border-collapse: collapse; margin-top: 8px; }
+#dev th, #dev td { border: 1px solid var(--secondary); padding: 2px 8px; text-align: left; }
+#dev .fail { color: var(--secondary); font-weight: bold; }
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="left">
+    <h1>td editor</h1>
+    <div class="lhead">primitives</div>
+    <div id="prims"></div>
+    <hr>
+    <div class="lhead">tools</div>
+    <div id="tools"></div>
+    <hr>
+    <div id="numpanel"></div>
+  </div>
+  <div id="main">
+    <div id="strip">
+      <button id="bnew">new</button>
+      <button id="bopen">open</button>
+      <button id="bsave">save</button>
+      <button id="bexport">export .h</button>
+      <div class="sep"></div>
+      <button id="bmode">shaded</button>
+      <button id="bsnap">snap on</button>
+      <span id="budget"></span>
+    </div>
+    <div id="panels">
+      <div class="panel" data-panel="top"><canvas></canvas><span class="plabel">top</span></div>
+      <div class="panel" data-panel="persp"><canvas></canvas><span class="plabel">perspective</span><button id="resetview" title="reset all views to origin"></button></div>
+      <div class="panel" data-panel="front"><canvas></canvas><span class="plabel">front</span></div>
+      <div class="panel" data-panel="side"><canvas></canvas><span class="plabel">side</span></div>
+    </div>
+  </div>
+</div>
+<div id="dev"></div>
+<input type="file" id="openfile" accept=".json,.h,.txt" hidden>
+
+<script id="td-core">
+"use strict";
+// ===========================================================================
+// core — pure logic, no DOM. Runs in the browser and, for the parity and
+// export test drivers, under node (the drivers extract this script block).
+// Everything here is a port of third_dimension source, and parity is the
+// contract:
+//   - math: TD_Math.h (tdEulerXYZ composition order R5, exact matrix shapes)
+//   - generators: TD_Primitives.cpp, all eight builders — topology, vertex
+//     order, winding, analytic normals, defaults, clamp-to-minimum
+//   - validation: td_validateMesh (TD_Mesh.cpp) plus the converter's
+//     signed-volume winding check
+//   - emission: tools/obj2mesh.py's exact header dialect
+// The parity gate: extras/dev/dump_primitives.cpp dumps the C++ generators as
+// JSON; diffPrimitives() below must report zero mismatches (indices exact,
+// floats to 1e-6) before anything built on these generators is trusted.
+// ===========================================================================
+const TDCore = (() => {
+
+// ---- math (TD_Math.h ports; JS doubles stand in for float) ---------------
+
+function normalize3(v, fallback) {
+  const len2 = v[0] * v[0] + v[1] * v[1] + v[2] * v[2];
+  if (len2 < 1e-12) return fallback ? fallback.slice() : [0, 0, 1];
+  const inv = 1 / Math.sqrt(len2);
+  return [v[0] * inv, v[1] * inv, v[2] * inv];
+}
+
+// row-major 3x3, column-vector convention: v' = M*v (TD_Mat3).
+function mat3RotX(a) {
+  const c = Math.cos(a), s = Math.sin(a);
+  return [1, 0, 0, 0, c, -s, 0, s, c];
+}
+function mat3RotY(a) {
+  const c = Math.cos(a), s = Math.sin(a);
+  return [c, 0, s, 0, 1, 0, -s, 0, c];
+}
+function mat3RotZ(a) {
+  const c = Math.cos(a), s = Math.sin(a);
+  return [c, -s, 0, s, c, 0, 0, 0, 1];
+}
+function mat3Mul(a, b) {
+  const o = new Array(9);
+  for (let r = 0; r < 3; ++r)
+    for (let c = 0; c < 3; ++c)
+      o[r * 3 + c] = a[r * 3] * b[c] + a[r * 3 + 1] * b[3 + c] + a[r * 3 + 2] * b[6 + c];
+  return o;
+}
+function mat3MulVec(M, v) {
+  return [M[0] * v[0] + M[1] * v[1] + M[2] * v[2],
+          M[3] * v[0] + M[4] * v[1] + M[5] * v[2],
+          M[6] * v[0] + M[7] * v[1] + M[8] * v[2]];
+}
+// R = Rx*(Ry*Rz): Z roll first, then Y yaw, then X pitch — convention R5,
+// composed with two multiplies in exactly the library's order.
+function eulerXYZ(rx, ry, rz) {
+  return mat3Mul(mat3RotX(rx), mat3Mul(mat3RotY(ry), mat3RotZ(rz)));
+}
+
+// decompose R (assumed a rotation) back to the committed euler XYZ order:
+// R = Rx(rx)·Ry(ry)·Rz(rz) has m[2] = sin(ry); away from the gimbal branch
+// rx = atan2(-m[5], m[8]) and rz = atan2(-m[1], m[0]) (cos(ry) >= 0 from
+// asin). At ry = ±90° the x/z axes align; rz is pinned to 0 and rx takes
+// the whole in-plane angle: rx = atan2(sin(ry)·m[3], m[4]). The branch
+// threshold is tight (cos(ry) ~ 1.4e-5): the atan2 arguments scale with
+// cos(ry), which stays far above double-precision noise until then, and a
+// too-wide branch mis-decomposes poses like (π, ~π/2, -π) that are not
+// actually gimbal-locked.
+function eulerFromMat(m) {
+  let sy = m[2];
+  if (sy > 1) sy = 1;
+  if (sy < -1) sy = -1;
+  const ry = Math.asin(sy);
+  if (Math.abs(sy) < 0.9999999999) {
+    return [Math.atan2(-m[5], m[8]), ry, Math.atan2(-m[1], m[0])];
+  }
+  return [Math.atan2(sy * m[3], m[4]), ry, 0];
+}
+
+// D16: a drag rotation is a true rotation about a world axis composed onto
+// the part's current rotation — R' = Raxis(theta)·R — then decomposed back
+// to euler XYZ for storage. axis is 'x' | 'y' | 'z'.
+function rotateEulerAboutAxis(rot, axis, theta) {
+  const A = axis === "x" ? mat3RotX(theta) : axis === "y" ? mat3RotY(theta) : mat3RotZ(theta);
+  return eulerFromMat(mat3Mul(A, eulerXYZ(rot[0], rot[1], rot[2])));
+}
+
+// gumball companion: rotation about one of the part's OWN axes composes on
+// the right — R' = R·Raxis(theta) — so the grabbed arc's axis stays fixed
+// under the rotation it applies (R'·e_axis == R·e_axis).
+function rotateEulerAboutModelAxis(rot, axis, theta) {
+  const A = axis === "x" ? mat3RotX(theta) : axis === "y" ? mat3RotY(theta) : mat3RotZ(theta);
+  return eulerFromMat(mat3Mul(eulerXYZ(rot[0], rot[1], rot[2]), A));
+}
+
+// ---- primitive generators (TD_Primitives.cpp ports) -----------------------
+// Every builder reproduces the C++ generator exactly: face-major fan
+// triangles, true polygon loops, CCW-outward winding, per-corner analytic
+// normals, header defaults, clamp-to-minimum tessellation, empty mesh on
+// non-positive dimensions. Do not "clean up" loop or winding order here —
+// the dump diff will catch it, but the point is to never drift at all.
+
+const kPi = Math.PI;
+
+function ringAngle(i, n) { return (2 * kPi) * i / n; }
+function ringMidAngle(i, n) { return (2 * kPi) * (i + 0.5) / n; }
+
+function radialUnit(p) {
+  const inv = 1 / Math.sqrt(p[0] * p[0] + p[1] * p[1] + p[2] * p[2]);
+  return [p[0] * inv, p[1] * inv, p[2] * inv];
+}
+
+const kUp = [0, 1, 0];
+const kDown = [0, -1, 0];
+
+function emptyMesh() {
+  return { verts: [], tris: [], cnorms: [], faces: [], faceVerts: [],
+           nverts: 0, ntris: 0, nfaces: 0, faceVertCount: 0, boundRadius: 0 };
+}
+
+// TD_MeshBuilder analog. begin() enforces the same uint16 limits; the
+// cursor discipline (face ranges tiling the tri/loop tables) holds by
+// construction exactly as in the C++ builder.
+function meshBuilder(nv, nt, nf, nloop) {
+  if (nv > 0xFFFF || nt > 0xFFFF || nf > 0xFFFF || nloop > 0xFFFF) return null;
+  return {
+    verts: [], tris: [], cnorms: [], faces: [], faceVerts: [],
+    _triStart: 0, _loopStart: 0,
+    addVert(x, y, z) { this.verts.push([x, y, z]); return this.verts.length - 1; },
+    addTri(a, b, c, na, nb, nc) {
+      this.tris.push([a, b, c]);
+      this.cnorms.push(na.slice(), nb.slice(), nc.slice());
+    },
+    beginFace() { this._triStart = this.tris.length; this._loopStart = this.faceVerts.length; },
+    loopVert(v) { this.faceVerts.push(v); },
+    endFace() {
+      this.faces.push([this._triStart, this.tris.length - this._triStart,
+                       this._loopStart, this.faceVerts.length - this._loopStart]);
+    },
+    finish(boundRadius) {
+      return { verts: this.verts, tris: this.tris, cnorms: this.cnorms,
+               faces: this.faces, faceVerts: this.faceVerts,
+               nverts: this.verts.length, ntris: this.tris.length,
+               nfaces: this.faces.length, faceVertCount: this.faceVerts.length,
+               boundRadius };
+    },
+  };
+}
+
+// box: corners bottom ring 0-3 then top ring 4-7; six hard-creased quads.
+function genBox(p) {
+  const w = p.w, h = p.h, d = p.d;
+  if (!(w > 0) || !(h > 0) || !(d > 0)) return emptyMesh();
+  const b = meshBuilder(8, 12, 6, 24);
+  if (!b) return emptyMesh();
+  const CORNER = [
+    [-1, -1, -1], [+1, -1, -1], [+1, -1, +1], [-1, -1, +1],
+    [-1, +1, -1], [+1, +1, -1], [+1, +1, +1], [-1, +1, +1],
+  ];
+  for (let i = 0; i < 8; ++i)
+    b.addVert(CORNER[i][0] * (w * 0.5), CORNER[i][1] * (h * 0.5), CORNER[i][2] * (d * 0.5));
+  const LOOP = [
+    [0, 1, 2, 3], [4, 7, 6, 5], [1, 5, 6, 2],
+    [0, 3, 7, 4], [2, 6, 7, 3], [0, 4, 5, 1],
+  ];
+  const NORMAL = [
+    [0, -1, 0], [0, 1, 0], [1, 0, 0],
+    [-1, 0, 0], [0, 0, 1], [0, 0, -1],
+  ];
+  for (let f = 0; f < 6; ++f) {
+    b.beginFace();
+    for (let i = 0; i < 4; ++i) b.loopVert(LOOP[f][i]);
+    b.addTri(LOOP[f][0], LOOP[f][1], LOOP[f][2], NORMAL[f], NORMAL[f], NORMAL[f]);
+    b.addTri(LOOP[f][0], LOOP[f][2], LOOP[f][3], NORMAL[f], NORMAL[f], NORMAL[f]);
+    b.endFace();
+  }
+  return b.finish(Math.sqrt(w * w + h * h + d * d) * 0.5);
+}
+
+// shared UV-sphere body for sphere and ellipsoid: identical topology, the
+// per-corner normal function is the only difference.
+function genSphereBody(S, T, vertFn, normFn, boundRadius) {
+  const b = meshBuilder(S * (T - 1) + 2, 2 * S * (T - 1), S * T, S * (4 * T - 2));
+  if (!b) return emptyMesh();
+  const north = b.addVert(...vertFn(0, 0, true));
+  for (let j = 1; j < T; ++j) {
+    const phi = kPi * j / T;
+    for (let i = 0; i < S; ++i) b.addVert(...vertFn(phi, ringAngle(i, S), false));
+  }
+  const south = b.addVert(...vertFn(kPi, 0, true));
+  // row 0: S triangles fanning from the north pole to ring 1.
+  for (let i = 0; i < S; ++i) {
+    const r0 = 1 + i, r1 = 1 + (i + 1) % S;
+    b.beginFace();
+    b.loopVert(r0);
+    b.loopVert(north);
+    b.loopVert(r1);
+    b.addTri(r0, north, r1, normFn(b.verts[r0]), normFn(b.verts[north]), normFn(b.verts[r1]));
+    b.endFace();
+  }
+  // rows 1..T-2: S quads {lower_i, upper_i, upper_i+1, lower_i+1}.
+  for (let k = 1; k + 1 < T; ++k) {
+    const up = 1 + (k - 1) * S;
+    const lo = up + S;
+    for (let i = 0; i < S; ++i) {
+      const i2 = (i + 1) % S;
+      const l0 = lo + i, u0 = up + i, u1 = up + i2, l1 = lo + i2;
+      b.beginFace();
+      b.loopVert(l0);
+      b.loopVert(u0);
+      b.loopVert(u1);
+      b.loopVert(l1);
+      b.addTri(l0, u0, u1, normFn(b.verts[l0]), normFn(b.verts[u0]), normFn(b.verts[u1]));
+      b.addTri(l0, u1, l1, normFn(b.verts[l0]), normFn(b.verts[u1]), normFn(b.verts[l1]));
+      b.endFace();
+    }
+  }
+  // row T-1: S triangles closing the last ring to the south pole.
+  const last = 1 + (T - 2) * S;
+  for (let i = 0; i < S; ++i) {
+    const u0 = last + i, u1 = last + (i + 1) % S;
+    b.beginFace();
+    b.loopVert(south);
+    b.loopVert(u0);
+    b.loopVert(u1);
+    b.addTri(south, u0, u1, normFn(b.verts[south]), normFn(b.verts[u0]), normFn(b.verts[u1]));
+    b.endFace();
+  }
+  return b.finish(boundRadius);
+}
+
+function genSphere(p) {
+  const radius = p.radius;
+  if (!(radius > 0)) return emptyMesh();
+  const S = p.slices < 3 ? 3 : Math.floor(p.slices);
+  const T = p.stacks < 2 ? 2 : Math.floor(p.stacks);
+  return genSphereBody(S, T,
+    (phi, a, pole) => pole
+      ? [0, phi === 0 ? radius : -radius, 0]
+      : [radius * (Math.sin(phi) * Math.cos(a)), radius * Math.cos(phi),
+         radius * (Math.sin(phi) * Math.sin(a))],
+    radialUnit, radius);
+}
+
+// ellipsoid normal: the implicit-surface gradient normalize(p * invSq) —
+// NOT the scaled sphere normal.
+function genEllipsoid(p) {
+  const rx = p.rx, ry = p.ry, rz = p.rz;
+  if (!(rx > 0) || !(ry > 0) || !(rz > 0)) return emptyMesh();
+  const S = p.slices < 3 ? 3 : Math.floor(p.slices);
+  const T = p.stacks < 2 ? 2 : Math.floor(p.stacks);
+  const invSq = [1 / (rx * rx), 1 / (ry * ry), 1 / (rz * rz)];
+  const ellipsoidUnit = (v) => {
+    const x = v[0] * invSq[0], y = v[1] * invSq[1], z = v[2] * invSq[2];
+    const inv = 1 / Math.sqrt(x * x + y * y + z * z);
+    return [x * inv, y * inv, z * inv];
+  };
+  const rmax = rx > ry ? (rx > rz ? rx : rz) : (ry > rz ? ry : rz);
+  return genSphereBody(S, T,
+    (phi, a, pole) => pole
+      ? [0, phi === 0 ? ry : -ry, 0]
+      : [rx * (Math.sin(phi) * Math.cos(a)), ry * Math.cos(phi),
+         rz * (Math.sin(phi) * Math.sin(a))],
+    ellipsoidUnit, rmax);
+}
+
+// shared tube behind cylinder (smooth radial wall) and prism (flat per-face
+// wall): N-gon tube plus two single n-gon cap loops. The -Y cap loop runs at
+// increasing angle, the +Y cap at decreasing angle (CCW-outward both).
+function makeTube(sides, height, radius, smoothSides) {
+  if (!(height > 0) || !(radius > 0)) return emptyMesh();
+  const N = sides < 3 ? 3 : Math.floor(sides);
+  const b = meshBuilder(2 * N, 4 * N - 4, N + 2, 6 * N);
+  if (!b) return emptyMesh();
+  const hy = height * 0.5;
+  for (let i = 0; i < N; ++i) {
+    const a = ringAngle(i, N);
+    b.addVert(radius * Math.cos(a), -hy, radius * Math.sin(a));
+  }
+  for (let i = 0; i < N; ++i) {
+    const a = ringAngle(i, N);
+    b.addVert(radius * Math.cos(a), hy, radius * Math.sin(a));
+  }
+  for (let i = 0; i < N; ++i) {
+    const j = (i + 1) % N;
+    const lo0 = i, hi0 = N + i, hi1 = N + j, lo1 = j;
+    let n0, n1;
+    if (smoothSides) {
+      const a0 = ringAngle(i, N), a1 = ringAngle(j, N);
+      n0 = [Math.cos(a0), 0, Math.sin(a0)];
+      n1 = [Math.cos(a1), 0, Math.sin(a1)];
+    } else {
+      const am = ringMidAngle(i, N);
+      n0 = [Math.cos(am), 0, Math.sin(am)];
+      n1 = n0;
+    }
+    b.beginFace();
+    b.loopVert(lo0);
+    b.loopVert(hi0);
+    b.loopVert(hi1);
+    b.loopVert(lo1);
+    b.addTri(lo0, hi0, hi1, n0, n0, n1);
+    b.addTri(lo0, hi1, lo1, n0, n1, n1);
+    b.endFace();
+  }
+  // -Y cap: increasing angle, fanned from its first loop vertex.
+  b.beginFace();
+  for (let i = 0; i < N; ++i) b.loopVert(i);
+  for (let i = 1; i + 1 < N; ++i) b.addTri(0, i, i + 1, kDown, kDown, kDown);
+  b.endFace();
+  // +Y cap: decreasing angle from slot 0, fanned from its first loop vertex.
+  b.beginFace();
+  b.loopVert(N);
+  for (let i = N - 1; i >= 1; --i) b.loopVert(N + i);
+  for (let k = 1; k + 1 < N; ++k) b.addTri(N, N + (N - k), N + (N - k - 1), kUp, kUp, kUp);
+  b.endFace();
+  return b.finish(Math.sqrt(radius * radius + height * height * 0.25));
+}
+
+function genCylinder(p) { return makeTube(p.sides, p.height, p.radius, true); }
+function genPrism(p) { return makeTube(p.sides, p.height, p.radius, false); }
+
+// cone: flank loops {ring_j, ring_i, apex}; apex corner takes the surface
+// normal at the face's angular center (no apex highlight singularity).
+function genCone(p) {
+  const height = p.height, radius = p.radius;
+  if (!(height > 0) || !(radius > 0)) return emptyMesh();
+  const N = p.sides < 3 ? 3 : Math.floor(p.sides);
+  const b = meshBuilder(N + 1, 2 * N - 2, N + 1, 4 * N);
+  if (!b) return emptyMesh();
+  const hy = height * 0.5;
+  for (let i = 0; i < N; ++i) {
+    const a = ringAngle(i, N);
+    b.addVert(radius * Math.cos(a), -hy, radius * Math.sin(a));
+  }
+  const apex = b.addVert(0, hy, 0);
+  const flankNormal = (a) => {
+    const x = height * Math.cos(a), y = radius, z = height * Math.sin(a);
+    const inv = 1 / Math.sqrt(x * x + y * y + z * z);
+    return [x * inv, y * inv, z * inv];
+  };
+  for (let i = 0; i < N; ++i) {
+    const j = (i + 1) % N;
+    const ni = flankNormal(ringAngle(i, N));
+    const nj = flankNormal(ringAngle(j, N));
+    const nc = flankNormal(ringMidAngle(i, N));
+    b.beginFace();
+    b.loopVert(j);
+    b.loopVert(i);
+    b.loopVert(apex);
+    b.addTri(j, i, apex, nj, ni, nc);
+    b.endFace();
+  }
+  b.beginFace();
+  for (let i = 0; i < N; ++i) b.loopVert(i);
+  for (let i = 1; i + 1 < N; ++i) b.addTri(0, i, i + 1, kDown, kDown, kDown);
+  b.endFace();
+  return b.finish(Math.sqrt(radius * radius + height * height * 0.25));
+}
+
+// torus: U-major/V-minor vertex grid, all quads, closed both directions.
+function genTorus(p) {
+  const tubeRadius = p.tubeRadius, ringRadius = p.ringRadius;
+  if (!(tubeRadius > 0) || !(ringRadius > tubeRadius)) return emptyMesh();
+  const U = p.segU < 3 ? 3 : Math.floor(p.segU);
+  const V = p.segV < 3 ? 3 : Math.floor(p.segV);
+  const b = meshBuilder(U * V, 2 * U * V, U * V, 4 * U * V);
+  if (!b) return emptyMesh();
+  for (let u = 0; u < U; ++u) {
+    const A = ringAngle(u, U);
+    const ca = Math.cos(A), sa = Math.sin(A);
+    for (let v = 0; v < V; ++v) {
+      const B = ringAngle(v, V);
+      const cb = Math.cos(B), sb = Math.sin(B);
+      b.addVert(ringRadius * ca + tubeRadius * (cb * ca), tubeRadius * sb,
+                ringRadius * sa + tubeRadius * (cb * sa));
+    }
+  }
+  const torusNormal = (u, v) => {
+    const A = ringAngle(u, U), B = ringAngle(v, V);
+    const cb = Math.cos(B);
+    return [cb * Math.cos(A), Math.sin(B), cb * Math.sin(A)];
+  };
+  for (let u = 0; u < U; ++u) {
+    const u2 = (u + 1) % U;
+    for (let v = 0; v < V; ++v) {
+      const v2 = (v + 1) % V;
+      const i00 = u * V + v, i01 = u * V + v2, i11 = u2 * V + v2, i10 = u2 * V + v;
+      const n00 = torusNormal(u, v), n01 = torusNormal(u, v2);
+      const n11 = torusNormal(u2, v2), n10 = torusNormal(u2, v);
+      b.beginFace();
+      b.loopVert(i00);
+      b.loopVert(i01);
+      b.loopVert(i11);
+      b.loopVert(i10);
+      b.addTri(i00, i01, i11, n00, n01, n11);
+      b.addTri(i00, i11, i10, n00, n11, n10);
+      b.endFace();
+    }
+  }
+  return b.finish(ringRadius + tubeRadius);
+}
+
+// plane: single-sided XZ grid at y = 0 facing +Y; open mesh (volume-exempt).
+function genPlane(p) {
+  const width = p.width, depth = p.depth;
+  if (!(width > 0) || !(depth > 0)) return emptyMesh();
+  const C = p.cols < 1 ? 1 : Math.floor(p.cols);
+  const R = p.rows < 1 ? 1 : Math.floor(p.rows);
+  const b = meshBuilder((C + 1) * (R + 1), 2 * C * R, C * R, 4 * C * R);
+  if (!b) return emptyMesh();
+  for (let r = 0; r <= R; ++r) {
+    const z = depth * r / R - depth * 0.5;
+    for (let c = 0; c <= C; ++c) {
+      const x = width * c / C - width * 0.5;
+      b.addVert(x, 0, z);
+    }
+  }
+  for (let r = 0; r < R; ++r)
+    for (let c = 0; c < C; ++c) {
+      const v00 = r * (C + 1) + c;
+      const v10 = (r + 1) * (C + 1) + c;
+      const v11 = v10 + 1;
+      const v01 = v00 + 1;
+      b.beginFace();
+      b.loopVert(v00);
+      b.loopVert(v10);
+      b.loopVert(v11);
+      b.loopVert(v01);
+      b.addTri(v00, v10, v11, kUp, kUp, kUp);
+      b.addTri(v00, v11, v01, kUp, kUp, kUp);
+      b.endFace();
+    }
+  return b.finish(Math.sqrt(width * width + depth * depth) * 0.5);
+}
+
+// registry: constructor-parameter specs mirror TD_Primitives.h signatures
+// and defaults verbatim; `closed` marks meshes under the signed-volume
+// invariant (the plane is the one open mesh).
+const PRIMS = {
+  box: { gen: genBox, closed: true, params: [
+    { k: "w", def: 1 }, { k: "h", def: 1 }, { k: "d", def: 1 }] },
+  sphere: { gen: genSphere, closed: true, params: [
+    { k: "slices", def: 16, int: true }, { k: "stacks", def: 8, int: true },
+    { k: "radius", def: 0.5 }] },
+  ellipsoid: { gen: genEllipsoid, closed: true, params: [
+    { k: "slices", def: 16, int: true }, { k: "stacks", def: 8, int: true },
+    { k: "rx", def: 0.5 }, { k: "ry", def: 0.25 }, { k: "rz", def: 0.5 }] },
+  cylinder: { gen: genCylinder, closed: true, params: [
+    { k: "sides", def: 16, int: true }, { k: "height", def: 1 }, { k: "radius", def: 0.5 }] },
+  cone: { gen: genCone, closed: true, params: [
+    { k: "sides", def: 16, int: true }, { k: "height", def: 1 }, { k: "radius", def: 0.5 }] },
+  prism: { gen: genPrism, closed: true, params: [
+    { k: "sides", def: 6, int: true }, { k: "height", def: 1 }, { k: "radius", def: 0.5 }] },
+  torus: { gen: genTorus, closed: true, params: [
+    { k: "segU", def: 16, int: true }, { k: "segV", def: 8, int: true },
+    { k: "tubeRadius", def: 0.15 }, { k: "ringRadius", def: 0.35 }] },
+  plane: { gen: genPlane, closed: false, params: [
+    { k: "cols", def: 1, int: true }, { k: "rows", def: 1, int: true },
+    { k: "width", def: 1 }, { k: "depth", def: 1 }] },
+};
+const PRIM_ORDER = ["box", "sphere", "ellipsoid", "cylinder", "cone", "prism", "torus", "plane"];
+
+function defaultParams(type) {
+  const out = {};
+  for (const s of PRIMS[type].params) out[s.k] = s.def;
+  return out;
+}
+
+function generate(type, params) {
+  const spec = PRIMS[type];
+  if (!spec) return emptyMesh();
+  return spec.gen(params);
+}
+
+// ---- project model (the git artifact) -------------------------------------
+
+const PROJECT_FORMAT = "td-editor-1";
+
+function newProject() {
+  return { format: PROJECT_FORMAT, name: "model", nextId: 1, snap: true, parts: [] };
+}
+
+// mints a part with fresh id from the persisted counter (survives
+// save/open and undo restores, so ids never collide across either).
+function mintPart(project, type) {
+  const part = {
+    id: "p" + project.nextId,
+    type,
+    params: defaultParams(type),
+    position: [0, 0, 0],
+    rotation: [0, 0, 0],
+    scale: [1, 1, 1],
+  };
+  project.nextId += 1;
+  return part;
+}
+
+const MIN_SCALE = 1e-3;  // D7: negative and zero scale are rejected everywhere
+
+function isVec3(v) {
+  return Array.isArray(v) && v.length === 3 && v.every((x) => typeof x === "number" && isFinite(x));
+}
+
+// full structural validation of an opened project; returns a list of
+// human-readable problems (empty = valid). Mutates nothing.
+function validateProject(p) {
+  const errs = [];
+  if (!p || typeof p !== "object") return ["not a JSON object"];
+  if (p.format !== PROJECT_FORMAT) errs.push(`format is ${JSON.stringify(p.format)}, expected "${PROJECT_FORMAT}"`);
+  if (typeof p.name !== "string" || !p.name) errs.push("missing project name");
+  if (!Array.isArray(p.parts)) { errs.push("missing parts array"); return errs; }
+  if (typeof p.nextId !== "number" || !isFinite(p.nextId)) errs.push("missing nextId counter");
+  const seen = new Set();
+  p.parts.forEach((part, i) => {
+    const at = `part ${i + 1}`;
+    if (!part || typeof part !== "object") { errs.push(`${at}: not an object`); return; }
+    if (typeof part.id !== "string" || !part.id) errs.push(`${at}: missing id`);
+    else if (seen.has(part.id)) errs.push(`${at}: duplicate id "${part.id}"`);
+    else seen.add(part.id);
+    if (!PRIMS[part.type]) { errs.push(`${at}: unknown type "${part.type}"`); return; }
+    if (!part.params || typeof part.params !== "object") errs.push(`${at}: missing params`);
+    else {
+      let paramsOk = true;
+      for (const s of PRIMS[part.type].params) {
+        const v = part.params[s.k];
+        if (typeof v !== "number" || !isFinite(v)) {
+          errs.push(`${at}: param ${s.k} is not a number`);
+          paramsOk = false;
+        }
+      }
+      // the generator is the authority on parameter validity (positive
+      // dimensions, torus ring > tube, uint16 limits): a part that
+      // generates no geometry would be invisible and unselectable — an
+      // unrepairable phantom — so refuse it at open instead.
+      if (paramsOk && generate(part.type, part.params).nverts === 0)
+        errs.push(`${at}: the ${part.type} generator rejects these params (non-positive dimension or over-limit tessellation)`);
+    }
+    if (!isVec3(part.position)) errs.push(`${at}: bad position`);
+    if (!isVec3(part.rotation)) errs.push(`${at}: bad rotation`);
+    if (!isVec3(part.scale)) errs.push(`${at}: bad scale`);
+    else if (!part.scale.every((s) => s > 0)) errs.push(`${at}: scale must be > 0 on every axis (negative scale is rejected — rotate instead)`);
+    if (part.mold !== undefined) {
+      if (!part.mold || typeof part.mold !== "object" || !Array.isArray(part.mold.dabs))
+        errs.push(`${at}: bad mold block (expected { dabs: [...] })`);
+      else
+        part.mold.dabs.forEach((d, j) => {
+          if (!d || !isVec3(d.at) ||
+              typeof d.r !== "number" || !(d.r > 0) || !isFinite(d.r) ||
+              typeof d.s !== "number" || !isFinite(d.s))
+            errs.push(`${at}: bad mold dab ${j + 1} (need at [x,y,z], r > 0, finite s)`);
+        });
+    }
+  });
+  return errs;
+}
+
+// serialize with a stable field order so project diffs stay minimal; the
+// mold block is emitted only when it holds dabs, so unsculpted projects
+// serialize exactly as before.
+function serializeProject(p) {
+  const parts = p.parts.map((part) => {
+    const out = {
+      id: part.id, type: part.type, params: part.params,
+      position: part.position, rotation: part.rotation, scale: part.scale,
+    };
+    const dabs = moldedDabs(part);
+    if (dabs) out.mold = { dabs: dabs.map((d) => ({ at: d.at, r: d.r, s: d.s })) };
+    return out;
+  });
+  return JSON.stringify(
+    { format: p.format, name: p.name, nextId: p.nextId, snap: p.snap, parts }, null, 2);
+}
+
+const PROJECT_BEGIN = "TD_EDITOR_PROJECT_BEGIN";
+const PROJECT_END = "TD_EDITOR_PROJECT_END";
+
+// accepts a saved .json or an exported .h (recovering the embedded project
+// block). Throws Error with a readable message on anything else.
+function parseProjectText(text) {
+  let jsonText = null;
+  const trimmed = text.replace(/^﻿/, "").trim();
+  if (trimmed.startsWith("{")) {
+    jsonText = trimmed;
+  } else {
+    const begin = text.indexOf(PROJECT_BEGIN);
+    const end = text.indexOf(PROJECT_END);
+    if (begin >= 0 && end > begin) {
+      const block = text.slice(text.indexOf("\n", begin) + 1, text.lastIndexOf("\n", end));
+      jsonText = block.split("\n").map((l) => l.replace(/^\s*\/\/ ?/, "")).join("\n");
+    }
+  }
+  if (jsonText === null)
+    throw new Error("not a td-editor project: expected a .json project file or an exported .h with an embedded " + PROJECT_BEGIN + " block");
+  let p;
+  try {
+    p = JSON.parse(jsonText);
+  } catch (e) {
+    throw new Error("project JSON does not parse: " + e.message);
+  }
+  const errs = validateProject(p);
+  if (errs.length) throw new Error("invalid project:\n  " + errs.join("\n  "));
+  // safety: the persisted counter must clear every existing numeric id so
+  // future mints can't collide even if the file was hand-edited.
+  let maxId = 0;
+  for (const part of p.parts) {
+    const m = /^p(\d+)$/.exec(part.id);
+    if (m) maxId = Math.max(maxId, parseInt(m[1], 10));
+  }
+  if (p.nextId <= maxId) p.nextId = maxId + 1;
+  if (typeof p.snap !== "boolean") p.snap = true;
+  return p;
+}
+
+// ---- part transform (shared by preview and baker — D9's parity point) -----
+
+// world geometry of one part: v' = R·diag(s)·v + pos (R from the committed
+// euler order), normals n' = normalize(R·diag(1/s)·n) — the inverse-
+// transpose path, which both the preview shading and the baked header use,
+// so they cannot disagree. Returns null when the part's params are invalid.
+function partWorldGeometry(part) {
+  const mesh = generate(part.type, part.params);
+  if (mesh.nverts === 0) return null;
+  // molding: displace along smooth welded normals, then swap the stale
+  // analytic normals for converter-style creased ones. generate() built
+  // fresh arrays, so the in-place edits touch nothing shared.
+  const dabs = moldedDabs(part);
+  if (dabs) {
+    applyMold(mesh, dabs);
+    recomputeCreasedNormals(mesh);
+  }
+  const R = eulerXYZ(part.rotation[0], part.rotation[1], part.rotation[2]);
+  const [sx, sy, sz] = part.scale;
+  const [px, py, pz] = part.position;
+  const wverts = new Array(mesh.nverts);
+  for (let i = 0; i < mesh.nverts; ++i) {
+    const v = mesh.verts[i];
+    const x = v[0] * sx, y = v[1] * sy, z = v[2] * sz;
+    wverts[i] = [R[0] * x + R[1] * y + R[2] * z + px,
+                 R[3] * x + R[4] * y + R[5] * z + py,
+                 R[6] * x + R[7] * y + R[8] * z + pz];
+  }
+  const isx = 1 / sx, isy = 1 / sy, isz = 1 / sz;
+  const wnorms = new Array(mesh.cnorms.length);
+  for (let i = 0; i < mesh.cnorms.length; ++i) {
+    const n = mesh.cnorms[i];
+    const x = n[0] * isx, y = n[1] * isy, z = n[2] * isz;
+    wnorms[i] = normalize3([R[0] * x + R[1] * y + R[2] * z,
+                            R[3] * x + R[4] * y + R[5] * z,
+                            R[6] * x + R[7] * y + R[8] * z]);
+  }
+  return { mesh, wverts, wnorms };
+}
+
+// ---- lighting (library defaults, scene lighting not editable in v1) -------
+
+const AMBIENT = 0.15;
+const LIGHT_AZ = 0.7, LIGHT_EL = 0.45, LIGHT_INTENSITY = 1.0;
+// L = (-sin(az)·cos(el), sin(el), -cos(az)·cos(el)) — R7's exact formula.
+const LIGHT_DIR = [
+  -Math.sin(LIGHT_AZ) * Math.cos(LIGHT_EL),
+  Math.sin(LIGHT_EL),
+  -Math.cos(LIGHT_AZ) * Math.cos(LIGHT_EL),
+];
+
+// the library's exact shade formula (single key light, default scene):
+// clamp(ambient + (1 - ambient) * max(0, n·L) * intensity).
+function shadeOf(nWorld) {
+  let diff = nWorld[0] * LIGHT_DIR[0] + nWorld[1] * LIGHT_DIR[1] + nWorld[2] * LIGHT_DIR[2];
+  if (diff < 0) diff = 0;
+  const lit = AMBIENT + (1 - AMBIENT) * diff * LIGHT_INTENSITY;
+  return lit > 1 ? 1 : lit;
+}
+
+// ---- molding (brush dabs -> derived displacement field) -------------------
+// A part's optional mold block is a list of brush dabs in the part's LOCAL
+// space: { at: [x,y,z], r, s } — center, radius, signed strength (+ out,
+// - in). Geometry stays fully derived: the generated primitive's vertices
+// displace along their smooth welded normals by the sum of every dab's
+// falloff, so the sculpt is order-independent, re-evaluates onto any
+// tessellation, rides the part's transform, and diffs in git as dabs.
+// Verts sharing a position share a normal and a displacement, so closed
+// meshes stay closed.
+
+// C1 falloff: 1 at the center easing to 0 at the rim (inverted smoothstep).
+function moldFalloff(t) {
+  if (t >= 1) return 0;
+  if (t <= 0) return 1;
+  return 1 - t * t * (3 - 2 * t);
+}
+
+function posKeyOf(v) { return v[0] + "," + v[1] + "," + v[2]; }
+
+// displace mesh verts in place along smooth position-welded vertex normals
+// (area-weighted fan-triangle sums — the standard smooth normal, used only
+// as the displacement direction; shading normals are recomputed after).
+function applyMold(mesh, dabs) {
+  const acc = new Map();
+  for (const t of mesh.tris) {
+    const a = mesh.verts[t[0]], b = mesh.verts[t[1]], c = mesh.verts[t[2]];
+    const e1 = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+    const e2 = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
+    const n = [e1[1] * e2[2] - e1[2] * e2[1],
+               e1[2] * e2[0] - e1[0] * e2[2],
+               e1[0] * e2[1] - e1[1] * e2[0]];
+    for (const vi of t) {
+      const k = posKeyOf(mesh.verts[vi]);
+      const s = acc.get(k);
+      if (s) { s[0] += n[0]; s[1] += n[1]; s[2] += n[2]; }
+      else acc.set(k, n.slice());
+    }
+  }
+  for (let i = 0; i < mesh.nverts; ++i) {
+    const v = mesh.verts[i];
+    const n = normalize3(acc.get(posKeyOf(v)) || [0, 0, 1]);
+    let d = 0;
+    for (const dab of dabs) {
+      const dx = v[0] - dab.at[0], dy = v[1] - dab.at[1], dz = v[2] - dab.at[2];
+      const w = moldFalloff(Math.sqrt(dx * dx + dy * dy + dz * dz) / dab.r);
+      if (w > 0) d += dab.s * w;
+    }
+    if (d !== 0) {
+      v[0] += n[0] * d;
+      v[1] += n[1] * d;
+      v[2] += n[2] * d;
+    }
+  }
+}
+
+// after displacement the analytic normals are stale; recompute per-corner
+// normals with exactly the converter's semantics (obj2mesh.py): per-face
+// Newell normals (fan-cross fallback), position-welded adjacency with
+// consecutive dedupe, area-weighted average of faces within the 60° crease
+// angle of the corner's own face. A sculpted part shades exactly as the
+// same shape would arriving through the OBJ pipeline.
+function recomputeCreasedNormals(mesh) {
+  const V = mesh.verts;
+  const fnorm = [], funit = [];
+  for (let f = 0; f < mesh.nfaces; ++f) {
+    const loopStart = mesh.faces[f][2], loopCount = mesh.faces[f][3];
+    let nx = 0, ny = 0, nz = 0;
+    for (let k = 0; k < loopCount; ++k) {
+      const a = V[mesh.faceVerts[loopStart + k]];
+      const b = V[mesh.faceVerts[loopStart + (k + 1) % loopCount]];
+      nx += (a[1] - b[1]) * (a[2] + b[2]);
+      ny += (a[2] - b[2]) * (a[0] + b[0]);
+      nz += (a[0] - b[0]) * (a[1] + b[1]);
+    }
+    let n = [nx, ny, nz];
+    if (Math.hypot(nx, ny, nz) < 1e-12) {
+      // pathological cancelling non-planar face: fall back to fan-tri sums
+      const triStart = mesh.faces[f][0], triCount = mesh.faces[f][1];
+      n = [0, 0, 0];
+      for (let t = triStart; t < triStart + triCount; ++t) {
+        const a = V[mesh.tris[t][0]], b = V[mesh.tris[t][1]], c = V[mesh.tris[t][2]];
+        n[0] += (b[1] - a[1]) * (c[2] - a[2]) - (b[2] - a[2]) * (c[1] - a[1]);
+        n[1] += (b[2] - a[2]) * (c[0] - a[0]) - (b[0] - a[0]) * (c[2] - a[2]);
+        n[2] += (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]);
+      }
+    }
+    const len = Math.hypot(n[0], n[1], n[2]);
+    fnorm.push(n);
+    funit.push(len >= 1e-12 ? [n[0] / len, n[1] / len, n[2] / len] : [0, 0, 0]);
+  }
+  const posFaces = new Map();
+  for (let f = 0; f < mesh.nfaces; ++f) {
+    const loopStart = mesh.faces[f][2], loopCount = mesh.faces[f][3];
+    for (let k = 0; k < loopCount; ++k) {
+      const key = posKeyOf(V[mesh.faceVerts[loopStart + k]]);
+      let lst = posFaces.get(key);
+      if (!lst) posFaces.set(key, lst = []);
+      if (!lst.length || lst[lst.length - 1] !== f) lst.push(f);
+    }
+  }
+  const cosCrease = Math.cos(Math.PI / 3);  // 60° — converter default
+  const cache = new Map();
+  const cornerNormal = (fi, key) => {
+    const ck = fi + "|" + key;
+    const hit = cache.get(ck);
+    if (hit) return hit;
+    const nf = funit[fi];
+    let ax = 0, ay = 0, az = 0;
+    for (const gi of posFaces.get(key)) {
+      const g = funit[gi];
+      if (nf[0] * g[0] + nf[1] * g[1] + nf[2] * g[2] >= cosCrease) {
+        ax += fnorm[gi][0];
+        ay += fnorm[gi][1];
+        az += fnorm[gi][2];
+      }
+    }
+    const len = Math.hypot(ax, ay, az);
+    const n = len >= 1e-12 ? [ax / len, ay / len, az / len] : nf.slice();
+    cache.set(ck, n);
+    return n;
+  };
+  const cnorms = new Array(3 * mesh.ntris);
+  for (let f = 0; f < mesh.nfaces; ++f) {
+    const triStart = mesh.faces[f][0], triCount = mesh.faces[f][1];
+    for (let t = triStart; t < triStart + triCount; ++t)
+      for (let k = 0; k < 3; ++k)
+        cnorms[3 * t + k] = cornerNormal(f, posKeyOf(V[mesh.tris[t][k]]));
+  }
+  mesh.cnorms = cnorms;
+}
+
+function moldedDabs(part) {
+  return part.mold && Array.isArray(part.mold.dabs) && part.mold.dabs.length
+      ? part.mold.dabs : null;
+}
+
+// ---- mesh validation (td_validateMesh port + converter volume check) ------
+
+function validateMeshJS(m) {
+  for (let t = 0; t < m.ntris; ++t)
+    for (let k = 0; k < 3; ++k)
+      if (m.tris[t][k] >= m.nverts) return false;
+  for (let i = 0; i < m.faceVertCount; ++i)
+    if (m.faceVerts[i] >= m.nverts) return false;
+  let triAt = 0, loopAt = 0;
+  for (let f = 0; f < m.nfaces; ++f) {
+    const fc = m.faces[f];
+    if (fc[0] !== triAt) return false;
+    if (fc[2] !== loopAt) return false;
+    if (fc[3] < 3) return false;
+    triAt += fc[1];
+    loopAt += fc[3];
+  }
+  if (triAt !== m.ntris) return false;
+  if (loopAt !== m.faceVertCount) return false;
+  if (m.cnorms.length !== 3 * m.ntris) return false;
+  return true;
+}
+
+// divergence-theorem signed volume over fan triangles: positive iff closed
+// and CCW-outward (converter parity).
+function signedVolume(verts, tris) {
+  let vol = 0;
+  for (const t of tris) {
+    const a = verts[t[0]], b = verts[t[1]], c = verts[t[2]];
+    vol += a[0] * (b[1] * c[2] - b[2] * c[1]) +
+           a[1] * (b[2] * c[0] - b[0] * c[2]) +
+           a[2] * (b[0] * c[1] - b[1] * c[0]);
+  }
+  return vol / 6;
+}
+
+// ---- budget (exact closed forms from the mesh-builder layout) -------------
+
+const CAP_U16 = 65535;
+const CAP_TRIS = 21845;  // 3*ntris (the cnorm table) must fit uint16
+
+function countsOf(parts) {
+  let nv = 0, nt = 0, nf = 0, nloop = 0;
+  for (const part of parts) {
+    const m = generate(part.type, part.params);
+    nv += m.nverts;
+    nt += m.ntris;
+    nf += m.nfaces;
+    nloop += m.faceVertCount;
+  }
+  return { nv, nt, nf, nloop };
+}
+
+function budgetOf(c) {
+  const flash = 12 * c.nv + 42 * c.nt + 8 * c.nf + 2 * c.nloop;
+  const ram = 12 * c.nv + 17 * c.nf + 108;
+  const over = [];
+  if (c.nv > CAP_U16) over.push(`${c.nv} verts exceeds the uint16 cap (65535)`);
+  if (c.nf > CAP_U16) over.push(`${c.nf} faces exceeds the uint16 cap (65535)`);
+  if (c.nloop > CAP_U16) over.push(`${c.nloop} loop entries exceeds the uint16 cap (65535)`);
+  if (c.nt > CAP_TRIS) over.push(`${c.nt} tris exceeds the corner-normal cap (21845: 3x tris must fit uint16)`);
+  const frac = Math.max(c.nv / CAP_U16, c.nf / CAP_U16, c.nloop / CAP_U16, c.nt / CAP_TRIS);
+  return { flash, ram, over, hot: frac > 0.8 };
+}
+
+// ---- part world AABB + the interpenetration soft lint ---------------------
+
+function partWorldAABB(part) {
+  const geo = partWorldGeometry(part);
+  if (!geo) return null;
+  const lo = [Infinity, Infinity, Infinity], hi = [-Infinity, -Infinity, -Infinity];
+  for (const v of geo.wverts)
+    for (let k = 0; k < 3; ++k) {
+      if (v[k] < lo[k]) lo[k] = v[k];
+      if (v[k] > hi[k]) hi[k] = v[k];
+    }
+  return { lo, hi };
+}
+
+// pairs of parts whose world bounding boxes interpenetrate with positive
+// depth on every axis (flush contact is exactly zero and does not warn).
+// The painter's algorithm cannot resolve interpenetrating geometry; this is
+// the one place that warning can live.
+function overlapPairs(parts) {
+  const boxes = parts.map(partWorldAABB);
+  const out = [];
+  const EPS = 1e-6;
+  for (let i = 0; i < parts.length; ++i)
+    for (let j = i + 1; j < parts.length; ++j) {
+      const a = boxes[i], b = boxes[j];
+      if (!a || !b) continue;
+      let depth = Infinity;
+      for (let k = 0; k < 3; ++k)
+        depth = Math.min(depth, Math.min(a.hi[k], b.hi[k]) - Math.max(a.lo[k], b.lo[k]));
+      if (depth > EPS) out.push([parts[i], parts[j]]);
+    }
+  return out;
+}
+
+// ---- baker ----------------------------------------------------------------
+
+// bake the whole scene into one composite format-1 mesh:
+//   generate -> transform (partWorldGeometry) -> merge with index offsets ->
+//   center on bbox center + scale to unit bounding-sphere radius (converter
+//   parity; boundRadius 1.0) -> validate. Returns { ok:false, error } with a
+//   readable message on any refusal, else the composite plus everything the
+//   emitter and UI need (pre-normalization radius, signed volume, warnings).
+function bake(project) {
+  if (!project.parts.length) return { ok: false, error: "nothing to export: the scene has no parts" };
+
+  const counts = countsOf(project.parts);
+  const budget = budgetOf(counts);
+  if (budget.over.length)
+    return { ok: false, error: "export exceeds TD mesh format 1 caps:\n  " + budget.over.join("\n  ") };
+
+  const verts = [], tris = [], cnorms = [], faces = [], faceVerts = [];
+  const partRanges = [];
+  for (const part of project.parts) {
+    const geo = partWorldGeometry(part);
+    if (!geo)
+      return { ok: false, error: `part ${part.id} (${part.type}) has invalid parameters and generates no geometry` };
+    const vertBase = verts.length, triBase = tris.length, loopBase = faceVerts.length;
+    for (const v of geo.wverts) verts.push(v.slice());
+    for (const t of geo.mesh.tris) tris.push([t[0] + vertBase, t[1] + vertBase, t[2] + vertBase]);
+    for (const n of geo.wnorms) cnorms.push(n.slice());
+    for (const f of geo.mesh.faces) faces.push([f[0] + triBase, f[1], f[2] + loopBase, f[3]]);
+    for (const i of geo.mesh.faceVerts) faceVerts.push(i + vertBase);
+    partRanges.push({ part, triBase, triCount: geo.mesh.ntris });
+  }
+
+  // converter-parity normalization: center on the composite bbox center,
+  // scale so the farthest vertex sits at exactly radius 1.
+  const lo = [Infinity, Infinity, Infinity], hi = [-Infinity, -Infinity, -Infinity];
+  for (const v of verts)
+    for (let k = 0; k < 3; ++k) {
+      if (v[k] < lo[k]) lo[k] = v[k];
+      if (v[k] > hi[k]) hi[k] = v[k];
+    }
+  const center = [(lo[0] + hi[0]) * 0.5, (lo[1] + hi[1]) * 0.5, (lo[2] + hi[2]) * 0.5];
+  let radius = 0;
+  for (const v of verts) {
+    const dx = v[0] - center[0], dy = v[1] - center[1], dz = v[2] - center[2];
+    const d = Math.sqrt(dx * dx + dy * dy + dz * dz);
+    if (d > radius) radius = d;
+  }
+  if (!(radius > 0)) return { ok: false, error: "degenerate model (zero radius)" };
+  const inv = 1 / radius;
+  for (const v of verts) {
+    v[0] = (v[0] - center[0]) * inv;
+    v[1] = (v[1] - center[1]) * inv;
+    v[2] = (v[2] - center[2]) * inv;
+  }
+
+  // winding invariant per closed part (D7 forbids the mirror path that could
+  // break it; this check makes the refusal readable if it ever regresses).
+  for (const r of partRanges) {
+    if (!PRIMS[r.part.type].closed) continue;
+    const vol = signedVolume(verts, tris.slice(r.triBase, r.triBase + r.triCount));
+    if (!(vol > 0))
+      return { ok: false, error: `part ${r.part.id} (${r.part.type}) has non-positive signed volume — ` +
+               (moldedDabs(r.part)
+                 ? "molding has pushed it inside-out (undo the deepest dents or soften the brush)"
+                 : "winding is broken (this is a bug; please report the project JSON)") };
+  }
+
+  const mesh = {
+    verts, tris, cnorms, faces, faceVerts,
+    nverts: verts.length, ntris: tris.length, nfaces: faces.length,
+    faceVertCount: faceVerts.length, boundRadius: 1.0,
+  };
+  if (!validateMeshJS(mesh))
+    return { ok: false, error: "internal error: composite failed structural validation (please report the project JSON)" };
+
+  return {
+    ok: true, mesh, counts, budget,
+    preRadius: radius,
+    volume: signedVolume(verts, tris),
+    overlaps: overlapPairs(project.parts),
+  };
+}
+
+// ---- emitter (obj2mesh.py's exact dialect, additions only at the tail) ----
+
+// exact %.Nf: correctly-rounded fixed-point decimal of the double's true
+// binary value with ties-to-even — byte-identical to CPython's f"{v:.6f}"
+// (including "-0.000000" for negative zero). toFixed is also correctly
+// rounded but resolves exact decimal ties away from zero, so dyadic values
+// like 2^-7 would emit a different final digit than obj2mesh.py.
+const fmtBuf = new DataView(new ArrayBuffer(8));
+function fmtFixed(v, places) {
+  if (!isFinite(v)) return String(v);
+  fmtBuf.setFloat64(0, v);
+  const bits = fmtBuf.getBigUint64(0);
+  const negative = bits >> 63n === 1n;
+  const expBits = Number((bits >> 52n) & 0x7FFn);
+  let mant = bits & 0xFFFFFFFFFFFFFn;
+  let e2;
+  if (expBits === 0) { e2 = -1074; }  // subnormal
+  else { mant |= 0x10000000000000n; e2 = expBits - 1075; }
+  // exact value = mant * 2^e2; N = round-half-even(mant * 2^e2 * 10^places)
+  const scaled = mant * 10n ** BigInt(places);
+  let N;
+  if (e2 >= 0) {
+    N = scaled << BigInt(e2);
+  } else {
+    const shift = BigInt(-e2);
+    N = scaled >> shift;
+    const twiceRem = (scaled & ((1n << shift) - 1n)) << 1n;
+    const den = 1n << shift;
+    if (twiceRem > den || (twiceRem === den && (N & 1n) === 1n)) N += 1n;
+  }
+  const s = N.toString().padStart(places + 1, "0");
+  return (negative ? "-" : "") + s.slice(0, -places) + "." + s.slice(-places);
+}
+function fmt6(v) { return fmtFixed(v, 6); }
+function fmtSigned4(v) {
+  const s = fmtFixed(v, 4);
+  return s.startsWith("-") ? s : "+" + s;
+}
+// short human-readable float for comments/snippets (authored size).
+function fmtShort(v) {
+  const s = parseFloat(v.toPrecision(6));
+  return String(s);
+}
+
+// project name -> C identifier (symbol prefix) and CamelCase file stem.
+function cIdentifier(name) {
+  let id = name.replace(/[^A-Za-z0-9_]+/g, "_").replace(/^_+|_+$/g, "");
+  if (!id) id = "model";
+  if (/^[0-9]/.test(id)) id = "_" + id;
+  return id.toLowerCase();
+}
+function fileStem(name) {
+  const words = name.split(/[^A-Za-z0-9]+/).filter(Boolean);
+  if (!words.length) return "Model";
+  return words.map((w) => w[0].toUpperCase() + w.slice(1)).join("");
+}
+
+// emit the TD mesh format 1 header in exactly the converter's dialect —
+// comment-header shape, #pragma once, <TD_Mesh.h> include, format-1 #error
+// guard, five static const TD_PROGMEM arrays, the all-eleven-field
+// initializer — then append the two blocks the converter doesn't have: the
+// usage snippet and the recoverable project JSON. Nothing above the tail
+// differs from obj2mesh.py's output shape.
+function emitHeader(project, baked) {
+  const name = cIdentifier(project.name);
+  const stem = fileStem(project.name);
+  const m = baked.mesh;
+  const vol = baked.volume;
+  const lines = [];
+  lines.push("// SPDX-License-Identifier: MIT");
+  // the sanitized identifier names the source file: it is what Save actually
+  // writes, and raw names could inject non-comment lines into the header.
+  lines.push(`// generated by tools/editor.html from ${name}.json — do not edit.`);
+  lines.push(`// ${m.nverts} verts, ${m.ntris} tris, ${m.nfaces} faces (from ${project.parts.length} primitive parts).`);
+  lines.push("// centered on bbox center, scaled to unit bounding-sphere radius.");
+  lines.push(`// signed volume ${fmtSigned4(vol)} => winding ${vol > 0 ? "CCW-outward (good)" : "SUSPECT"}.`);
+  lines.push("#pragma once");
+  lines.push("#include <TD_Mesh.h>");
+  lines.push("");
+  lines.push("#if !defined(TD_MESH_FORMAT) || TD_MESH_FORMAT != 1");
+  lines.push('#error "This model header is TD mesh format 1 — regenerate with a matching tools/editor.html"');
+  lines.push("#endif");
+  lines.push("");
+  lines.push(`static const float ${name}_verts[${m.nverts}][3] TD_PROGMEM = {`);
+  for (const v of m.verts) lines.push(`  { ${fmt6(v[0])}f, ${fmt6(v[1])}f, ${fmt6(v[2])}f },`);
+  lines.push("};");
+  lines.push("");
+  lines.push("// fan triangles, face-major order (0-based indices)");
+  lines.push(`static const uint16_t ${name}_tris[${m.ntris}][3] TD_PROGMEM = {`);
+  for (const t of m.tris) lines.push(`  { ${t[0]}, ${t[1]}, ${t[2]} },`);
+  lines.push("};");
+  lines.push("");
+  lines.push("// per-corner unit normals (Gouraud), model space: 3 consecutive entries");
+  lines.push("// per triangle in fan-corner order; " +
+             (project.parts.some((part) => moldedDabs(part))
+               ? "molded parts re-smoothed (60 deg crease), the rest analytic"
+               : "analytic primitive normals (no re-smoothing)"));
+  lines.push(`static const float ${name}_cnorms[${m.cnorms.length}][3] TD_PROGMEM = {`);
+  for (const n of m.cnorms) lines.push(`  { ${fmt6(n[0])}f, ${fmt6(n[1])}f, ${fmt6(n[2])}f },`);
+  lines.push("};");
+  lines.push("");
+  lines.push("// per source face: { triStart, triCount, loopStart, loopCount }");
+  lines.push(`static const uint16_t ${name}_faces[${m.nfaces}][4] TD_PROGMEM = {`);
+  for (const f of m.faces) lines.push(`  { ${f[0]}, ${f[1]}, ${f[2]}, ${f[3]} },`);
+  lines.push("};");
+  lines.push("");
+  lines.push("// flattened original polygon loops (true face edges, for outlines)");
+  lines.push(`static const uint16_t ${name}_face_verts[${m.faceVertCount}] TD_PROGMEM = {`);
+  for (let k = 0; k < m.faceVerts.length; k += 16)
+    lines.push("  " + m.faceVerts.slice(k, k + 16).join(", ") + ",");
+  lines.push("};");
+  lines.push("");
+  lines.push("// TD mesh format 1 — all eleven fields explicit, in declaration order.");
+  lines.push(`static const TD_Mesh ${name}_mesh = {`);
+  lines.push(`  ${name}_verts,`);
+  lines.push(`  ${name}_tris,`);
+  lines.push(`  ${name}_cnorms,`);
+  lines.push(`  ${name}_faces,`);
+  lines.push(`  ${name}_face_verts,`);
+  lines.push("  nullptr,  // fattr: all faces TD_MATERIAL_LIT, no decals");
+  lines.push(`  ${m.nverts},  // nverts`);
+  lines.push(`  ${m.ntris},  // ntris`);
+  lines.push(`  ${m.nfaces},  // nfaces`);
+  lines.push(`  ${m.faceVertCount},  // faceVertCount`);
+  lines.push("  1.0f,  // boundRadius (normalized to unit bounding sphere)");
+  lines.push("};");
+  lines.push("");
+  // -- editor-only tail additions (strictly additive; the converter's output
+  // -- shape ends above this line) --
+  const r = fmtShort(baked.preRadius);
+  lines.push("// usage:");
+  lines.push(`// #include "TD_Model_${stem}.h"`);
+  lines.push(`// TD_Object ${name}(${name}_mesh);`);
+  lines.push(`// ${name}.setScale(${r}f);${" ".repeat(Math.max(1, 22 - r.length - name.length))}// authored size (bake radius ${r})`);
+  lines.push(`// scene.add(${name});`);
+  lines.push(`// scene.renderer().reserve(${m.nverts}, ${m.nfaces}, 1);  // exact: verts, FACES, objects`);
+  lines.push("//");
+  lines.push("// this header is generated — edit the project, not the arrays. The JSON");
+  lines.push("// below is the editable source: open this .h (or the .json it was saved");
+  lines.push("// from) in tools/editor.html to change the model and re-export.");
+  lines.push("// " + PROJECT_BEGIN);
+  for (const l of serializeProject(project).split("\n")) lines.push("// " + l);
+  lines.push("// " + PROJECT_END);
+  lines.push("");
+  return { fileName: `TD_Model_${stem}.h`, text: lines.join("\n") };
+}
+
+// ---- dev parity diff (against extras/dev/dump_primitives.cpp output) ------
+
+// diff one generated mesh against a dumped case: integer arrays must match
+// exactly, floats to 1e-6. Returns a list of mismatch strings (empty = pass).
+function diffMesh(js, dump, tol) {
+  const out = [];
+  const t = tol === undefined ? 1e-6 : tol;
+  for (const k of ["nverts", "ntris", "nfaces", "faceVertCount"])
+    if (js[k] !== dump[k]) out.push(`${k}: js ${js[k]} != c++ ${dump[k]}`);
+  if (out.length) return out;  // count mismatch: element diffs would just cascade
+  if (Math.abs(js.boundRadius - dump.boundRadius) > t)
+    out.push(`boundRadius: js ${js.boundRadius} != c++ ${dump.boundRadius}`);
+  const fdiff = (name, a, b) => {
+    for (let i = 0; i < b.length && out.length < 20; ++i)
+      for (let k = 0; k < 3; ++k)
+        if (Math.abs(a[i][k] - b[i][k]) > t) {
+          out.push(`${name}[${i}][${k}]: js ${a[i][k]} != c++ ${b[i][k]}`);
+          break;
+        }
+  };
+  const idiff = (name, a, b, width) => {
+    for (let i = 0; i < b.length && out.length < 20; ++i)
+      for (let k = 0; k < width; ++k) {
+        const av = width === 1 ? a[i] : a[i][k];
+        const bv = width === 1 ? b[i] : b[i][k];
+        if (av !== bv) {
+          out.push(`${name}[${i}]${width > 1 ? "[" + k + "]" : ""}: js ${av} != c++ ${bv}`);
+          break;
+        }
+      }
+  };
+  fdiff("verts", js.verts, dump.verts);
+  fdiff("cnorms", js.cnorms, dump.cnorms);
+  idiff("tris", js.tris, dump.tris, 3);
+  idiff("faces", js.faces, dump.faces, 4);
+  idiff("faceVerts", js.faceVerts, dump.faceVerts, 1);
+  return out;
+}
+
+// run the full parity suite against a parsed primitives_dump.json. Also
+// cross-checks the ellipsoid against a scaled sphere where the dump provides
+// the round (rx = ry = rz) case. Returns { cases: [{name, ok, problems}] }.
+function diffPrimitives(dump) {
+  const results = [];
+  for (const c of dump.cases) {
+    const js = generate(c.type, c.params);
+    const problems = diffMesh(js, c.mesh);
+    results.push({ name: c.name, ok: problems.length === 0, problems });
+  }
+  // ellipsoid-vs-scaled-sphere cross-check (P1 sweep requirement): a round
+  // ellipsoid must equal the same-tessellation sphere vertex-for-vertex, and
+  // its gradient normals must reduce to the sphere's radial normals.
+  const round = dump.cases.find((c) => c.name === "ellipsoid_round");
+  if (round) {
+    const sph = generate("sphere", { slices: round.params.slices, stacks: round.params.stacks, radius: round.params.rx });
+    const problems = diffMesh(sph, round.mesh);
+    results.push({ name: "ellipsoid_round == sphere(r)", ok: problems.length === 0, problems });
+  }
+  return { results, ok: results.every((r) => r.ok) };
+}
+
+return {
+  // math
+  normalize3, mat3RotX, mat3RotY, mat3RotZ, mat3Mul, mat3MulVec,
+  eulerXYZ, eulerFromMat, rotateEulerAboutAxis, rotateEulerAboutModelAxis,
+  // primitives
+  PRIMS, PRIM_ORDER, defaultParams, generate, emptyMesh,
+  // project
+  PROJECT_FORMAT, newProject, mintPart, validateProject, serializeProject,
+  parseProjectText, MIN_SCALE,
+  // geometry / preview / bake
+  partWorldGeometry, partWorldAABB, overlapPairs,
+  moldFalloff, applyMold, recomputeCreasedNormals, moldedDabs,
+  AMBIENT, LIGHT_DIR, shadeOf,
+  validateMeshJS, signedVolume, countsOf, budgetOf, CAP_U16, CAP_TRIS,
+  bake, emitHeader, cIdentifier, fileStem, fmtFixed,
+  // dev
+  diffMesh, diffPrimitives,
+};
+})();
+if (typeof module !== "undefined" && module.exports) module.exports = TDCore;
+</script>
+
+<script>
+"use strict";
+// ===========================================================================
+// UI — browser only (the jsc/node test drivers stop at TDCore). Four-panel
+// authoring per the plan: ortho panels place with the missing axis at 0,
+// perspective places on the ground plane; drag moves, R+drag rotates about
+// the panel's perpendicular axis (D16), S+drag scales exponentially; X/Y/Z
+// tap-lock a drag to a model axis; snap 0.25 / 15° with Alt bypass; space
+// fullscreens the hovered panel; the preview painter mirrors the device
+// pipeline's structure (per-face far-first sort with (part, face)
+// tie-breaks, per-triangle re-cull, the library's exact shade formula).
+// ===========================================================================
+(() => {
+if (typeof document === "undefined") return;
+const C = TDCore;
+
+// ---- tokens / tiny vec helpers -------------------------------------------
+
+const COL = {
+  primary: "#C8CBA9", secondary: "#A99E58", ink: "#3F3B22", paper: "#F2F1E6",
+};
+const INK_RGB = [63, 59, 34], PAPER_RGB = [242, 241, 230];
+function rampColor(shade) {
+  const r = Math.round(INK_RGB[0] + (PAPER_RGB[0] - INK_RGB[0]) * shade);
+  const g = Math.round(INK_RGB[1] + (PAPER_RGB[1] - INK_RGB[1]) * shade);
+  const b = Math.round(INK_RGB[2] + (PAPER_RGB[2] - INK_RGB[2]) * shade);
+  return `rgb(${r},${g},${b})`;
+}
+
+const add3 = (a, b) => [a[0] + b[0], a[1] + b[1], a[2] + b[2]];
+const sub3 = (a, b) => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+const mul3 = (a, s) => [a[0] * s, a[1] * s, a[2] * s];
+const dot3 = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+const cross3 = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2],
+                          a[0] * b[1] - a[1] * b[0]];
+
+// TD_Camera's lookRotation: rows { right, up, forward }, forward into scene.
+function lookRotation(eye, target) {
+  const f = C.normalize3(sub3(target, eye));
+  let r = cross3([0, 1, 0], f);
+  if (dot3(r, r) < 1e-12) r = cross3([0, 0, 1], f);
+  r = C.normalize3(r);
+  const u = cross3(f, r);
+  return { r, u, f };
+}
+
+const SNAP_POS = 0.25;
+const SNAP_ROT = 15 * Math.PI / 180;
+const NEAR = 0.05;
+function snapTo(v, step) { return Math.round(v / step) * step; }
+
+// ---- state ----------------------------------------------------------------
+
+let project = C.newProject();
+let selectedId = null;
+let armedType = null;          // primitive type armed for placement
+let shadedMode = true;         // wireframe <-> shaded toggle
+let tool = "select";           // "select" | "mold" (the tools section)
+let brushSize = 0.3;           // mold brush radius, world units
+let brushStrength = 0.05;      // mold brush center displacement, world units
+let moldCursor = null;         // { panel, x, y, rpx, onSurface } brush circle
+let undoStack = [], redoStack = [];
+const UNDO_CAP = 100;
+let drag = null;               // active left-drag gesture (move/rotate/scale)
+let navDrag = null;            // active right-drag navigation
+let ghost = null;              // { pos, valid } while armed
+let fullPanel = null;
+let lastMouse = { x: -1, y: -1 };  // client coords, for space-fullscreen hover
+const keysDown = new Set();
+let dirty = true;
+
+const geoCache = new WeakMap();  // part -> { rev, geo, shades }
+function touch(part) { part._rev = (part._rev || 0) + 1; }
+function getGeo(part) {
+  const rev = part._rev || 0;
+  const hit = geoCache.get(part);
+  if (hit && hit.rev === rev) return hit;
+  const geo = C.partWorldGeometry(part);
+  let shades = null;
+  if (geo) {
+    // preview shading takes the baker's normal path (geo.wnorms) — never the
+    // runtime's rotation-only path — so preview and export shade identically.
+    shades = new Array(geo.wnorms.length);
+    for (let i = 0; i < geo.wnorms.length; ++i) shades[i] = C.shadeOf(geo.wnorms[i]);
+  }
+  const entry = { rev, geo, shades };
+  geoCache.set(part, entry);
+  return entry;
+}
+function selectedPart() {
+  return project.parts.find((p) => p.id === selectedId) || null;
+}
+function partIndex(part) { return project.parts.indexOf(part); }
+
+// ---- undo (snapshot stack of project JSON, gesture boundaries only) -------
+
+function snapshot() { return C.serializeProject(project); }
+function restore(text) {
+  const keepSnap = project.snap;  // the snap toggle is a live preference,
+  project = JSON.parse(text);     // not a gesture — undo never flips it
+  project.snap = keepSnap;
+  if (!selectedPart()) selectedId = null;
+  syncStripButtons();
+  refreshNumeric();
+  refreshBudget();
+  invalidate();
+}
+function pushUndo(preState) {
+  undoStack.push(preState === undefined ? snapshot() : preState);
+  if (undoStack.length > UNDO_CAP) undoStack.shift();
+  redoStack.length = 0;
+}
+function doUndo() {
+  if (!undoStack.length) return;
+  redoStack.push(snapshot());
+  restore(undoStack.pop());
+}
+function doRedo() {
+  if (!redoStack.length) return;
+  undoStack.push(snapshot());
+  restore(redoStack.pop());
+}
+
+// ---- panels ---------------------------------------------------------------
+// ortho bases from the plan's table (right-handed, det +1, forward INTO the
+// scene): front sees the model's front (R1); top reads the front edge (-Z)
+// at the bottom of the screen.
+
+// home poses — used at boot and by the reset-view dot (which resets every
+// panel: the perspective orbit and each ortho panel's pan/zoom)
+const PERSP_HOME = { az: 0.7, orbitEl: 0.4, dist: 6, target: [0, 0, 0] };
+const ORTHO_HOME = { zoom: 70, panX: 0, panY: 0 };
+
+const panels = {
+  top:   { kind: "ortho", right: [1, 0, 0], up: [0, 0, 1], forward: [0, -1, 0],
+           ...ORTHO_HOME },
+  front: { kind: "ortho", right: [1, 0, 0], up: [0, 1, 0], forward: [0, 0, 1],
+           ...ORTHO_HOME },
+  side:  { kind: "ortho", right: [0, 0, 1], up: [0, 1, 0], forward: [-1, 0, 0],
+           ...ORTHO_HOME },
+  // NB: the orbit elevation is named orbitEl, NOT el — p.el is the panel's
+  // DOM element (assigned in the setup loop below), and a collision here
+  // turns the whole perspective projection into silent NaNs.
+  persp: { kind: "persp", az: PERSP_HOME.az, orbitEl: PERSP_HOME.orbitEl,
+           dist: PERSP_HOME.dist, target: PERSP_HOME.target.slice() },
+};
+
+for (const el of document.querySelectorAll(".panel")) {
+  const p = panels[el.dataset.panel];
+  p.name = el.dataset.panel;
+  p.el = el;
+  p.canvas = el.querySelector("canvas");
+  p.ctx = p.canvas.getContext("2d");
+  p.w = 0;
+  p.h = 0;
+}
+
+function panelSize(p) {
+  const dpr = window.devicePixelRatio || 1;
+  const w = p.el.clientWidth, h = p.el.clientHeight;
+  if (w <= 0 || h <= 0) return;
+  if (p.canvas.width !== Math.round(w * dpr) || p.canvas.height !== Math.round(h * dpr)) {
+    p.canvas.width = Math.round(w * dpr);
+    p.canvas.height = Math.round(h * dpr);
+  }
+  p.w = w;
+  p.h = h;
+  p.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+}
+
+const resizeObs = new ResizeObserver(() => {
+  for (const p of Object.values(panels)) panelSize(p);
+  renderAll();  // immediate re-render on resize (fullscreen swap included)
+});
+for (const p of Object.values(panels)) resizeObs.observe(p.el);
+
+// moving the window to a monitor with a different devicePixelRatio changes
+// no CSS box, so the ResizeObserver stays silent — watch the ratio itself
+// (the media query is specific to the ratio it was created at, so re-arm)
+(function watchDPR() {
+  matchMedia(`(resolution: ${window.devicePixelRatio}dppx)`).addEventListener(
+    "change", () => {
+      for (const p of Object.values(panels)) panelSize(p);
+      renderAll();
+      watchDPR();
+    }, { once: true });
+})();
+
+// world <-> screen per panel (screen y grows down; the one y-flip is the
+// projection line, matching R4)
+function orthoToScreen(p, v) {
+  return [p.w / 2 + p.zoom * (dot3(p.right, v) - p.panX),
+          p.h / 2 - p.zoom * (dot3(p.up, v) - p.panY)];
+}
+function orthoFromScreen(p, mx, my) {
+  const wx = (mx - p.w / 2) / p.zoom + p.panX;
+  const wy = -(my - p.h / 2) / p.zoom + p.panY;
+  return add3(mul3(p.right, wx), mul3(p.up, wy));  // missing axis = 0 (D5)
+}
+function perspCamera(p) {
+  const ce = Math.cos(p.orbitEl);
+  const dir = [-Math.sin(p.az) * ce, Math.sin(p.orbitEl), -Math.cos(p.az) * ce];
+  const eye = add3(p.target, mul3(dir, p.dist));
+  const basis = lookRotation(eye, p.target);
+  const f = (p.h / 2) / Math.tan(25 * Math.PI / 180);
+  return { eye, basis, f, cx: p.w / 2, cy: p.h / 2 };
+}
+function perspProject(cam, v) {
+  const d = sub3(v, cam.eye);
+  const z = dot3(cam.basis.f, d);
+  if (z < NEAR) return { clip: true, z };
+  const x = dot3(cam.basis.r, d), y = dot3(cam.basis.u, d);
+  return { clip: false, x: cam.cx + cam.f * x / z, y: cam.cy - cam.f * y / z, z };
+}
+// world-space ray through a perspective screen point
+function perspRay(p, cam, mx, my) {
+  const vx = (mx - cam.cx) / cam.f, vy = -(my - cam.cy) / cam.f;
+  const dir = add3(add3(mul3(cam.basis.r, vx), mul3(cam.basis.u, vy)), cam.basis.f);
+  return { origin: cam.eye, dir };
+}
+// ray ∩ horizontal plane y = planeY; null when parallel, behind the camera,
+// or outside a sane radius of the orbit target (keeps horizon-grazing rays
+// from flinging parts to infinity — D5).
+function groundHit(p, ray, planeY, unbounded) {
+  if (Math.abs(ray.dir[1]) < 1e-9) return null;
+  const t = (planeY - ray.origin[1]) / ray.dir[1];
+  if (t <= 0) return null;
+  const hit = add3(ray.origin, mul3(ray.dir, t));
+  if (!unbounded) {
+    const dx = hit[0] - p.target[0], dz = hit[2] - p.target[2];
+    if (Math.sqrt(dx * dx + dz * dz) > Math.max(10, 2.5 * p.dist)) return null;
+  }
+  return hit;
+}
+
+// ---- painter --------------------------------------------------------------
+
+function drawGridOrtho(p) {
+  const ctx = p.ctx;
+  const halfW = p.w / 2 / p.zoom, halfH = p.h / 2 / p.zoom;
+  const x0 = p.panX - halfW, x1 = p.panX + halfW;
+  const y0 = p.panY - halfH, y1 = p.panY + halfH;
+  const line = (wx0, wy0, wx1, wy1) => {
+    ctx.beginPath();
+    ctx.moveTo(p.w / 2 + p.zoom * (wx0 - p.panX), p.h / 2 - p.zoom * (wy0 - p.panY));
+    ctx.lineTo(p.w / 2 + p.zoom * (wx1 - p.panX), p.h / 2 - p.zoom * (wy1 - p.panY));
+    ctx.stroke();
+  };
+  ctx.lineWidth = 1;
+  // minor 0.25 grid in ink, major 1.0 lines in secondary; both fade out
+  // rather than clutter when zoomed far away
+  if (SNAP_POS * p.zoom >= 6) {
+    ctx.strokeStyle = COL.ink;
+    ctx.globalAlpha = 0.10;
+    for (let x = Math.ceil(x0 / SNAP_POS) * SNAP_POS; x <= x1; x += SNAP_POS) line(x, y0, x, y1);
+    for (let y = Math.ceil(y0 / SNAP_POS) * SNAP_POS; y <= y1; y += SNAP_POS) line(x0, y, x1, y);
+  }
+  if (p.zoom >= 6) {
+    ctx.strokeStyle = COL.secondary;
+    ctx.globalAlpha = 0.55;
+    for (let x = Math.ceil(x0); x <= x1; x += 1) line(x, y0, x, y1);
+    for (let y = Math.ceil(y0); y <= y1; y += 1) line(x0, y, x1, y);
+  }
+  // axes through the origin, slightly stronger
+  ctx.globalAlpha = 0.9;
+  ctx.strokeStyle = COL.secondary;
+  line(x0, 0, x1, 0);
+  line(0, y0, 0, y1);
+  ctx.globalAlpha = 1;
+}
+
+function drawGridPersp(p, cam) {
+  const ctx = p.ctx;
+  ctx.lineWidth = 1;
+  const seg = (a, b, alpha) => {
+    const pa = perspProject(cam, a), pb = perspProject(cam, b);
+    if (pa.clip || pb.clip) return;  // no near clipping, matching the device
+    ctx.globalAlpha = alpha;
+    ctx.beginPath();
+    ctx.moveTo(pa.x, pa.y);
+    ctx.lineTo(pb.x, pb.y);
+    ctx.stroke();
+  };
+  ctx.strokeStyle = COL.secondary;
+  const EXT = 5;
+  for (let i = -EXT; i <= EXT; ++i) {
+    const major = i === 0 ? 0.85 : 0.4;
+    seg([i, 0, -EXT], [i, 0, EXT], major);
+    seg([-EXT, 0, i], [EXT, 0, i], major);
+  }
+  ctx.globalAlpha = 1;
+}
+
+// project every part and build one global painter list, exactly the device
+// structure: mean view depth over each face's original loop, far first,
+// tie-broken (part index, face index); faces with any clipped loop vertex
+// are skipped whole (near-skip, R6 — perspective only).
+function buildDrawList(p, cam, parts) {
+  const projected = [];
+  for (const part of parts) {
+    const entry = getGeo(part);
+    if (!entry.geo) { projected.push(null); continue; }
+    const { mesh, wverts } = entry.geo;
+    const sx = new Float64Array(mesh.nverts), sy = new Float64Array(mesh.nverts);
+    const sz = new Float64Array(mesh.nverts);
+    let clip = null;
+    if (p.kind === "ortho") {
+      for (let i = 0; i < mesh.nverts; ++i) {
+        const v = wverts[i];
+        sx[i] = p.w / 2 + p.zoom * (dot3(p.right, v) - p.panX);
+        sy[i] = p.h / 2 - p.zoom * (dot3(p.up, v) - p.panY);
+        sz[i] = dot3(p.forward, v);
+      }
+    } else {
+      clip = new Uint8Array(mesh.nverts);
+      for (let i = 0; i < mesh.nverts; ++i) {
+        const pr = perspProject(cam, wverts[i]);
+        if (pr.clip) { clip[i] = 1; sz[i] = pr.z; continue; }
+        sx[i] = pr.x;
+        sy[i] = pr.y;
+        sz[i] = pr.z;
+      }
+    }
+    projected.push({ part, entry, sx, sy, sz, clip });
+  }
+  const list = [];
+  projected.forEach((pp, pi) => {
+    if (!pp) return;
+    const mesh = pp.entry.geo.mesh;
+    for (let f = 0; f < mesh.nfaces; ++f) {
+      const loopStart = mesh.faces[f][2], loopCount = mesh.faces[f][3];
+      let zsum = 0, skip = false;
+      for (let k = 0; k < loopCount; ++k) {
+        const vi = mesh.faceVerts[loopStart + k];
+        if (pp.clip && pp.clip[vi]) { skip = true; break; }
+        zsum += pp.sz[vi];
+      }
+      if (skip) continue;
+      list.push({ pp, pi, f, z: zsum / loopCount });
+    }
+  });
+  list.sort((a, b) => (b.z - a.z) || (a.pi - b.pi) || (a.f - b.f));
+  return { projected, list };
+}
+
+function faceAnyFront(pp, f) {
+  const mesh = pp.entry.geo.mesh;
+  const triStart = mesh.faces[f][0], triCount = mesh.faces[f][1];
+  for (let t = triStart; t < triStart + triCount; ++t) {
+    const [a, b, c] = mesh.tris[t];
+    const cross = (pp.sx[b] - pp.sx[a]) * (pp.sy[c] - pp.sy[a]) -
+                  (pp.sy[b] - pp.sy[a]) * (pp.sx[c] - pp.sx[a]);
+    if (cross > 0) return true;
+  }
+  return false;
+}
+
+// a face whose every fan triangle projects to ~zero area is edge-on to an
+// ortho panel (a y=0 plane seen from the front, a cap seen from the side).
+// The device would cull it, but an editor must still show and pick it —
+// edge-on faces draw and hit-test as their projected loop segments.
+const EDGE_EPS = 0.01;  // px²
+function faceEdgeOn(pp, f) {
+  const mesh = pp.entry.geo.mesh;
+  const triStart = mesh.faces[f][0], triCount = mesh.faces[f][1];
+  for (let t = triStart; t < triStart + triCount; ++t) {
+    const [a, b, c] = mesh.tris[t];
+    const cross = (pp.sx[b] - pp.sx[a]) * (pp.sy[c] - pp.sy[a]) -
+                  (pp.sy[b] - pp.sy[a]) * (pp.sx[c] - pp.sx[a]);
+    if (Math.abs(cross) > EDGE_EPS) return false;
+  }
+  return true;
+}
+
+function nearLoop(pp, f, mx, my, tol) {
+  const mesh = pp.entry.geo.mesh;
+  const loopStart = mesh.faces[f][2], loopCount = mesh.faces[f][3];
+  for (let k = 0; k < loopCount; ++k) {
+    const a = mesh.faceVerts[loopStart + k];
+    const b = mesh.faceVerts[loopStart + (k + 1) % loopCount];
+    const ax = pp.sx[a], ay = pp.sy[a];
+    const dx = pp.sx[b] - ax, dy = pp.sy[b] - ay;
+    const len2 = dx * dx + dy * dy;
+    let t = len2 > 0 ? ((mx - ax) * dx + (my - ay) * dy) / len2 : 0;
+    t = Math.min(1, Math.max(0, t));
+    const ex = ax + t * dx - mx, ey = ay + t * dy - my;
+    if (ex * ex + ey * ey <= tol * tol) return true;
+  }
+  return false;
+}
+
+function strokeLoop(ctx, pp, f) {
+  const mesh = pp.entry.geo.mesh;
+  const loopStart = mesh.faces[f][2], loopCount = mesh.faces[f][3];
+  ctx.beginPath();
+  for (let k = 0; k < loopCount; ++k) {
+    const vi = mesh.faceVerts[loopStart + k];
+    if (k === 0) ctx.moveTo(pp.sx[vi], pp.sy[vi]);
+    else ctx.lineTo(pp.sx[vi], pp.sy[vi]);
+  }
+  ctx.closePath();
+  ctx.stroke();
+}
+
+function renderPanel(p) {
+  if (!p.w || !p.h) return;
+  const ctx = p.ctx;
+  ctx.globalAlpha = 1;
+  ctx.fillStyle = COL.primary;
+  ctx.fillRect(0, 0, p.w, p.h);
+  const cam = p.kind === "persp" ? perspCamera(p) : null;
+  if (p.kind === "ortho") drawGridOrtho(p);
+  else drawGridPersp(p, cam);
+
+  const { list } = buildDrawList(p, cam, project.parts);
+  for (const rec of list) {
+    const { pp, f } = rec;
+    const isSelected = pp.part.id === selectedId;
+    if (!faceAnyFront(pp, f)) {
+      if (p.kind === "ortho" && faceEdgeOn(pp, f)) {
+        ctx.strokeStyle = isSelected ? COL.secondary : COL.ink;
+        ctx.lineWidth = isSelected ? 1.5 : 1;
+        strokeLoop(ctx, pp, f);
+      }
+      continue;
+    }
+    const mesh = pp.entry.geo.mesh;
+    if (shadedMode) {
+      // flat fill per fan triangle at the mean of its 3 corner shades (the
+      // library's exact shade values; flat because canvas 2D cannot
+      // gradient-fill a triangle) with a per-triangle any-front re-cull —
+      // the same face-granularity envelope as the device painter.
+      const triStart = mesh.faces[f][0], triCount = mesh.faces[f][1];
+      for (let t = triStart; t < triStart + triCount; ++t) {
+        const [a, b, c] = mesh.tris[t];
+        const cross = (pp.sx[b] - pp.sx[a]) * (pp.sy[c] - pp.sy[a]) -
+                      (pp.sy[b] - pp.sy[a]) * (pp.sx[c] - pp.sx[a]);
+        if (cross <= 0) continue;
+        const sh = (pp.entry.shades[3 * t] + pp.entry.shades[3 * t + 1] +
+                    pp.entry.shades[3 * t + 2]) / 3;
+        const col = rampColor(sh);
+        ctx.fillStyle = col;
+        ctx.strokeStyle = col;  // hairline-seal the shared fan edges
+        ctx.lineWidth = 0.75;
+        ctx.beginPath();
+        ctx.moveTo(pp.sx[a], pp.sy[a]);
+        ctx.lineTo(pp.sx[b], pp.sy[b]);
+        ctx.lineTo(pp.sx[c], pp.sy[c]);
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+      }
+      if (isSelected) {
+        ctx.strokeStyle = COL.secondary;
+        ctx.lineWidth = 1.5;
+        strokeLoop(ctx, pp, f);
+      }
+    } else {
+      // wireframe: front-facing true polygon loops only — no fan diagonals
+      ctx.strokeStyle = isSelected ? COL.secondary : COL.ink;
+      ctx.lineWidth = isSelected ? 1.5 : 1;
+      strokeLoop(ctx, pp, f);
+    }
+  }
+
+  // placement ghost, drawn in every panel while armed (wireframe loops)
+  if (armedType && ghost && ghost.valid) {
+    const gpart = { type: armedType, params: C.defaultParams(armedType),
+                    position: ghost.pos, rotation: [0, 0, 0], scale: [1, 1, 1] };
+    const geo = C.partWorldGeometry(gpart);
+    if (geo) {
+      const gp = projectGhost(p, cam, geo);
+      if (gp) {
+        ctx.strokeStyle = COL.secondary;
+        ctx.globalAlpha = 0.8;
+        ctx.lineWidth = 1;
+        for (let f = 0; f < geo.mesh.nfaces; ++f) {
+          if (!faceAnyFront(gp, f) &&
+              !(p.kind === "ortho" && faceEdgeOn(gp, f))) continue;
+          strokeLoop(ctx, gp, f);
+        }
+        ctx.globalAlpha = 1;
+      }
+    }
+  }
+
+  // gumball on the selected part (select tool only; armed mode shows the
+  // ghost, mold mode the brush circle)
+  const gbSel = selectedPart();
+  if (gbSel && !armedType && tool === "select") {
+    const gb = computeGumball(p, cam, gbSel);
+    if (gb) drawGumball(ctx, gb, drag && drag.gumball ? drag.gumball : null);
+  }
+
+  // mold brush circle (solid on the surface, faint off it)
+  if (tool === "mold" && moldCursor && moldCursor.panel === p.name) {
+    ctx.strokeStyle = COL.secondary;
+    ctx.globalAlpha = moldCursor.onSurface ? 1 : 0.35;
+    ctx.lineWidth = 1.25;
+    ctx.beginPath();
+    ctx.arc(moldCursor.x, moldCursor.y, moldCursor.rpx, 0, 2 * Math.PI);
+    ctx.stroke();
+    ctx.globalAlpha = 1;
+  }
+
+}
+
+function projectGhost(p, cam, geo) {
+  const n = geo.mesh.nverts;
+  const sx = new Float64Array(n), sy = new Float64Array(n);
+  for (let i = 0; i < n; ++i) {
+    if (p.kind === "ortho") {
+      const s = orthoToScreen(p, geo.wverts[i]);
+      sx[i] = s[0];
+      sy[i] = s[1];
+    } else {
+      const pr = perspProject(cam, geo.wverts[i]);
+      if (pr.clip) return null;
+      sx[i] = pr.x;
+      sy[i] = pr.y;
+    }
+  }
+  return { entry: { geo }, sx, sy };
+}
+
+function renderAll() {
+  for (const p of Object.values(panels)) {
+    if (fullPanel && p.name !== fullPanel) continue;
+    renderPanel(p);
+  }
+  dirty = false;
+}
+function invalidate() { dirty = true; }
+(function raf() {
+  if (dirty) renderAll();
+  requestAnimationFrame(raf);
+})();
+
+// ---- hit test -------------------------------------------------------------
+
+function pointInLoop(pp, f, mx, my) {
+  const mesh = pp.entry.geo.mesh;
+  const loopStart = mesh.faces[f][2], loopCount = mesh.faces[f][3];
+  let inside = false;
+  for (let k = 0, j = loopCount - 1; k < loopCount; j = k++) {
+    const a = mesh.faceVerts[loopStart + k], b = mesh.faceVerts[loopStart + j];
+    const ax = pp.sx[a], ay = pp.sy[a], bx = pp.sx[b], by = pp.sy[b];
+    if ((ay > my) !== (by > my) && mx < (bx - ax) * (my - ay) / (by - ay) + ax)
+      inside = !inside;
+  }
+  return inside;
+}
+
+// nearest front face containing the point wins (walk the painter list from
+// near to far); edge-on faces in ortho panels pick by segment proximity
+function pickPart(p, cam, mx, my) {
+  const { list } = buildDrawList(p, cam, project.parts);
+  for (let i = list.length - 1; i >= 0; --i) {
+    const rec = list[i];
+    if (!faceAnyFront(rec.pp, rec.f)) {
+      if (p.kind === "ortho" && faceEdgeOn(rec.pp, rec.f) &&
+          nearLoop(rec.pp, rec.f, mx, my, 4)) return rec.pp.part;
+      continue;
+    }
+    if (pointInLoop(rec.pp, rec.f, mx, my)) return rec.pp.part;
+  }
+  return null;
+}
+
+// ---- gumball --------------------------------------------------------------
+// Rhino-style manipulator on the selected part, drawn in the part's OWN
+// frame (its model axes — the same axes the X/Y/Z tap-locks use): three
+// shaft arrows move along an axis, three arcs rotate about it (composed on
+// the right, R' = R·Raxis, so the grabbed arc stays put), three squares
+// scale one axis (Shift while dragging a square scales all three axes
+// uniformly), and the center dot is the panel's free move. Constant screen
+// size. No red/green/blue exists in this colorscheme, so the axes are told
+// apart by lowercase letters at the arrow tips; hover and the active handle
+// highlight in secondary, the same language as selection (with Shift held,
+// every scale square lights up to signal uniform mode).
+
+const GB = { SHAFT: 46, TIP: 54, SQ: 30, SQH: 3.5, ARC: 40, CENTER: 4, ARCSEG: 24 };
+
+function computeGumball(p, cam, part) {
+  const o = part.position;
+  const proj = (v) => {
+    if (p.kind === "ortho") return orthoToScreen(p, v);
+    const pr = perspProject(cam, v);
+    return pr.clip ? null : [pr.x, pr.y];
+  };
+  const so = proj(o);
+  if (!so) return null;
+  // pixels per world unit at the part origin (screen-constant widget size)
+  let ppw;
+  if (p.kind === "ortho") ppw = p.zoom;
+  else {
+    const z = dot3(cam.basis.f, sub3(o, cam.eye));
+    if (z < NEAR) return null;
+    ppw = cam.f / z;
+  }
+  const R = C.eulerXYZ(part.rotation[0], part.rotation[1], part.rotation[2]);
+  const axesW = [[R[0], R[3], R[6]], [R[1], R[4], R[7]], [R[2], R[5], R[8]]];
+  const axes = [];
+  for (let a = 0; a < 3; ++a) {
+    const w = axesW[a];
+    const shaftEnd = proj(add3(o, mul3(w, GB.SHAFT / ppw)));
+    const entry = { w, shaftEnd: null, dir: null, pxPerWorld: 0, sq: null, tip: null, arc: null };
+    if (shaftEnd) {
+      const dx = shaftEnd[0] - so[0], dy = shaftEnd[1] - so[1];
+      const len = Math.hypot(dx, dy);
+      if (len > 10) {  // axis not hopelessly foreshortened
+        entry.shaftEnd = shaftEnd;
+        entry.dir = [dx / len, dy / len];
+        entry.pxPerWorld = len / (GB.SHAFT / ppw);
+        entry.sq = proj(add3(o, mul3(w, GB.SQ / ppw)));
+        entry.tip = [so[0] + entry.dir[0] * GB.TIP, so[1] + entry.dir[1] * GB.TIP];
+      }
+    }
+    // the rotation arc: the true 3D circle around axis a, spanned by the
+    // part's other two model axes, projected (an ellipse on screen)
+    const u = axesW[(a + 1) % 3], v = axesW[(a + 2) % 3];
+    const r = GB.ARC / ppw;
+    const pts = [];
+    for (let k = 0; k <= GB.ARCSEG; ++k) {
+      const t = 2 * Math.PI * k / GB.ARCSEG;
+      const pt = proj(add3(o, add3(mul3(u, r * Math.cos(t)), mul3(v, r * Math.sin(t)))));
+      if (!pt) { pts.length = 0; break; }
+      pts.push(pt);
+    }
+    if (pts.length) entry.arc = pts;
+    axes.push(entry);
+  }
+  return { so, ppw, axes };
+}
+
+function distToSegment(mx, my, ax, ay, bx, by) {
+  const dx = bx - ax, dy = by - ay;
+  const len2 = dx * dx + dy * dy;
+  let t = len2 > 0 ? ((mx - ax) * dx + (my - ay) * dy) / len2 : 0;
+  t = Math.min(1, Math.max(0, t));
+  return Math.hypot(ax + t * dx - mx, ay + t * dy - my);
+}
+
+// nearest handle under the cursor, or null. Precedence: the center dot,
+// then scale squares (they sit on the shafts), shafts, arcs.
+function hitGumball(gb, mx, my) {
+  if (!gb) return null;
+  if (Math.hypot(mx - gb.so[0], my - gb.so[1]) <= GB.CENTER + 3) return { type: "center" };
+  const A = "xyz";
+  for (let a = 0; a < 3; ++a) {
+    const e = gb.axes[a];
+    if (e.sq && Math.abs(mx - e.sq[0]) <= GB.SQH + 3 && Math.abs(my - e.sq[1]) <= GB.SQH + 3)
+      return { type: "scale", axis: a, key: A[a] };
+  }
+  for (let a = 0; a < 3; ++a) {
+    const e = gb.axes[a];
+    if (e.shaftEnd && distToSegment(mx, my, gb.so[0], gb.so[1], e.shaftEnd[0], e.shaftEnd[1]) <= 5)
+      return { type: "move", axis: a, key: A[a] };
+  }
+  for (let a = 0; a < 3; ++a) {
+    const e = gb.axes[a];
+    if (!e.arc) continue;
+    for (let k = 0; k + 1 < e.arc.length; ++k)
+      if (distToSegment(mx, my, e.arc[k][0], e.arc[k][1], e.arc[k + 1][0], e.arc[k + 1][1]) <= 5)
+        return { type: "rotate", axis: a, key: A[a] };
+  }
+  return null;
+}
+
+let gumballHover = null;  // { type, axis? } while the cursor rests on a handle
+let shiftDown = false;    // uniform-scale modifier state (for the highlight)
+
+function sameGumballHit(a, b) {
+  return (!a && !b) || (a && b && a.type === b.type && a.axis === b.axis);
+}
+
+function drawGumball(ctx, gb, active) {
+  const hot = (type, a) =>
+    (active && active.type === type && active.axis === a) ||
+    (!active && gumballHover && gumballHover.type === type && gumballHover.axis === a);
+  // Shift + a scale handle (hovered or dragging) = uniform: all squares hot
+  const uniformScale = shiftDown &&
+      ((active && active.type === "scale") ||
+       (!active && gumballHover && gumballHover.type === "scale"));
+  const LETTER = "xyz";
+  // arcs first (underneath)
+  for (let a = 0; a < 3; ++a) {
+    const e = gb.axes[a];
+    if (!e.arc) continue;
+    const h = hot("rotate", a);
+    ctx.strokeStyle = h ? COL.ink : COL.secondary;
+    ctx.lineWidth = h ? 2 : 1.25;
+    ctx.globalAlpha = h ? 1 : 0.75;
+    ctx.beginPath();
+    for (let k = 0; k < e.arc.length; ++k) {
+      if (k === 0) ctx.moveTo(e.arc[k][0], e.arc[k][1]);
+      else ctx.lineTo(e.arc[k][0], e.arc[k][1]);
+    }
+    ctx.stroke();
+  }
+  ctx.globalAlpha = 1;
+  for (let a = 0; a < 3; ++a) {
+    const e = gb.axes[a];
+    if (!e.shaftEnd) continue;
+    const hMove = hot("move", a);
+    ctx.strokeStyle = hMove ? COL.secondary : COL.ink;
+    ctx.lineWidth = hMove ? 2.5 : 1.5;
+    ctx.beginPath();
+    ctx.moveTo(gb.so[0], gb.so[1]);
+    ctx.lineTo(e.shaftEnd[0], e.shaftEnd[1]);
+    ctx.stroke();
+    // axis letter at the arrow tip — the colorscheme's stand-in for RGB axes
+    ctx.fillStyle = hMove ? COL.secondary : COL.ink;
+    ctx.font = "italic bold 11px 'Times New Roman', Times, serif";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText(LETTER[a], e.tip[0], e.tip[1]);
+    // scale square partway along the shaft
+    if (e.sq) {
+      const hSq = hot("scale", a) || uniformScale;
+      ctx.fillStyle = hSq ? COL.secondary : COL.paper;
+      ctx.strokeStyle = COL.ink;
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(e.sq[0] - GB.SQH, e.sq[1] - GB.SQH);
+      ctx.lineTo(e.sq[0] + GB.SQH, e.sq[1] - GB.SQH);
+      ctx.lineTo(e.sq[0] + GB.SQH, e.sq[1] + GB.SQH);
+      ctx.lineTo(e.sq[0] - GB.SQH, e.sq[1] + GB.SQH);
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+    }
+  }
+  // center dot: the panel's free move
+  const hC = hot("center");
+  ctx.fillStyle = hC ? COL.ink : COL.secondary;
+  ctx.strokeStyle = COL.ink;
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.arc(gb.so[0], gb.so[1], GB.CENTER, 0, 2 * Math.PI);
+  ctx.closePath();
+  ctx.fill();
+  ctx.stroke();
+  ctx.textAlign = "start";
+  ctx.textBaseline = "alphabetic";
+}
+
+// ---- molding brush --------------------------------------------------------
+// the mold tool paints dabs onto the SELECTED part: raycast the cursor onto
+// the live (already-displaced) surface, drop a dab at the local-space hit,
+// and let the core's displacement field do the rest. A drag is a stroke —
+// dabs land every quarter-brush of surface travel. Alt indents instead of
+// extruding (sampled at mousedown, like every drag kind). One stroke = one
+// undo gesture through the shared drag machinery.
+
+const len3 = (v) => Math.hypot(v[0], v[1], v[2]);
+
+// a world-space ray through the cursor for any panel (ortho rays start far
+// behind the viewport plane and run along forward)
+function panelRay(p, cam, mx, my) {
+  if (p.kind === "persp") return perspRay(p, cam, mx, my);
+  return { origin: sub3(orthoFromScreen(p, mx, my), mul3(p.forward, 1000)),
+           dir: p.forward.slice() };
+}
+
+// Möller–Trumbore; returns the ray parameter t or null
+function rayTriT(o, d, a, b, c) {
+  const e1 = sub3(b, a), e2 = sub3(c, a);
+  const pv = cross3(d, e2);
+  const det = dot3(e1, pv);
+  if (Math.abs(det) < 1e-12) return null;
+  const inv = 1 / det;
+  const tv = sub3(o, a);
+  const u = dot3(tv, pv) * inv;
+  if (u < 0 || u > 1) return null;
+  const qv = cross3(tv, e1);
+  const v = dot3(d, qv) * inv;
+  if (v < 0 || u + v > 1) return null;
+  const t = dot3(e2, qv) * inv;
+  return t > 1e-6 ? t : null;
+}
+
+function raycastPartWorld(part, ray) {
+  const entry = getGeo(part);
+  if (!entry.geo) return null;
+  const { mesh, wverts } = entry.geo;
+  let best = null;
+  for (const t of mesh.tris) {
+    const tt = rayTriT(ray.origin, ray.dir, wverts[t[0]], wverts[t[1]], wverts[t[2]]);
+    if (tt !== null && (best === null || tt < best)) best = tt;
+  }
+  return best === null ? null : { t: best, point: add3(ray.origin, mul3(ray.dir, best)) };
+}
+
+// inverse of the part transform: local = diag(1/s)·Rᵀ·(w − pos)
+function worldToLocalPoint(part, w) {
+  const R = C.eulerXYZ(part.rotation[0], part.rotation[1], part.rotation[2]);
+  const d = sub3(w, part.position);
+  return [(R[0] * d[0] + R[3] * d[1] + R[6] * d[2]) / part.scale[0],
+          (R[1] * d[0] + R[4] * d[1] + R[7] * d[2]) / part.scale[1],
+          (R[2] * d[0] + R[5] * d[1] + R[8] * d[2]) / part.scale[2]];
+}
+
+function round6(v) { return Math.round(v * 1e6) / 1e6; }
+
+function applyMoldDab(d, worldPt) {
+  const part = d.part;
+  if (!part.mold || !Array.isArray(part.mold.dabs)) part.mold = { dabs: [] };
+  // brush size/strength are world units; dabs live in local space — convert
+  // by the mean scale (slightly anisotropic under non-uniform scale)
+  const m = (part.scale[0] + part.scale[1] + part.scale[2]) / 3;
+  const local = worldToLocalPoint(part, worldPt);
+  part.mold.dabs.push({
+    at: [round6(local[0]), round6(local[1]), round6(local[2])],
+    r: Math.max(1e-4, round6(brushSize / m)),
+    s: round6((d.invert ? -1 : 1) * brushStrength / m),
+  });
+  d.lastDabAt = worldPt;
+  d.mutated = true;
+  touch(part);
+  invalidate();
+}
+
+// clay-style accumulation: while the button is held, a timer keeps
+// deepening the most recent dab at a fraction of the brush strength per
+// tick. The displacement field is linear in s, so growing the last dab's s
+// is exactly equivalent to stacking dabs — a stationary hold stays ONE
+// project-file entry however long you dwell. Moving still lays full-
+// strength dabs by surface distance (a slow stroke digs slightly deeper
+// than a fast one — clay behavior).
+const MOLD_TICK_MS = 80;
+const MOLD_ACCUM = 0.25;  // per-tick fraction of brush strength
+
+function accumulateLastDab(d) {
+  const dabs = C.moldedDabs(d.part);
+  if (!dabs) return;
+  const part = d.part;
+  const m = (part.scale[0] + part.scale[1] + part.scale[2]) / 3;
+  const last = dabs[dabs.length - 1];
+  last.s = round6(last.s + (d.invert ? -1 : 1) * MOLD_ACCUM * brushStrength / m);
+  d.mutated = true;
+  touch(part);
+  invalidate();
+}
+
+function beginMoldDrag(p, cam, part, hit, e) {
+  const d = { kind: "mold", panel: p, cam, part,
+              preState: snapshot(), mutated: false,
+              lastDabAt: null, invert: e.altKey };
+  applyMoldDab(d, hit.point);
+  d.timer = setInterval(() => {
+    if (drag !== d) { clearInterval(d.timer); return; }
+    accumulateLastDab(d);
+  }, MOLD_TICK_MS);
+  return d;
+}
+
+// the on-screen brush circle: centered on the surface hit when there is
+// one (radius converted at that depth), faint at the raw cursor otherwise
+function computeMoldCursor(p, cam, mx, my) {
+  const sel = selectedPart();
+  let onSurface = false, x = mx, y = my, ppw;
+  if (p.kind === "ortho") {
+    ppw = p.zoom;
+  } else {
+    const z0 = dot3(cam.basis.f, sub3(p.target, cam.eye));
+    ppw = cam.f / Math.max(z0, NEAR);
+  }
+  if (sel) {
+    const hit = raycastPartWorld(sel, panelRay(p, cam, mx, my));
+    if (hit) {
+      onSurface = true;
+      if (p.kind === "ortho") {
+        const s = orthoToScreen(p, hit.point);
+        x = s[0];
+        y = s[1];
+      } else {
+        const pr = perspProject(cam, hit.point);
+        if (!pr.clip) {
+          x = pr.x;
+          y = pr.y;
+          ppw = cam.f / pr.z;
+        }
+      }
+    }
+  }
+  return { panel: p.name, x, y, rpx: Math.max(2, brushSize * ppw), onSurface };
+}
+
+// ---- toolbar / strip ------------------------------------------------------
+
+const $ = (id) => document.getElementById(id);
+const stripName = document.createElement("input");
+stripName.id = "pname";
+stripName.title = "model name (drives the exported file, symbol, and snippet)";
+stripName.style.width = "90px";
+stripName.style.fontFamily = "inherit";
+stripName.style.fontSize = "12px";
+stripName.style.color = COL.ink;
+stripName.style.background = COL.paper;
+stripName.style.border = `1px solid ${COL.secondary}`;
+stripName.style.borderRadius = "1px";
+stripName.style.padding = "0 3px";
+$("bexport").after(stripName);
+stripName.value = project.name;
+stripName.addEventListener("keydown", (e) => {
+  if (e.key === "Enter") stripName.blur();
+  e.stopPropagation();
+});
+stripName.addEventListener("change", () => {
+  const name = stripName.value.trim();
+  if (!name || name === project.name) { stripName.value = project.name; return; }
+  pushUndo();
+  project.name = name;
+});
+
+function syncStripButtons() {
+  $("bmode").textContent = shadedMode ? "shaded" : "wireframe";
+  $("bsnap").textContent = project.snap ? "snap on" : "snap off";
+  stripName.value = project.name;
+}
+
+function download(fileName, text) {
+  const blob = new Blob([text], { type: "text/plain" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = fileName;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+}
+
+$("bnew").addEventListener("click", () => {
+  if (project.parts.length && !confirm("start a new scene? unsaved changes are lost."))
+    return;
+  project = C.newProject();
+  selectedId = null;
+  armedType = null;
+  undoStack.length = 0;
+  redoStack.length = 0;
+  syncStripButtons();
+  syncArmedButtons();
+  refreshNumeric();
+  refreshBudget();
+  invalidate();
+});
+
+$("bopen").addEventListener("click", () => {
+  // opening discards the scene and its undo history, exactly like [new]
+  if (project.parts.length && !confirm("open a project? unsaved changes are lost."))
+    return;
+  const inp = $("openfile");
+  inp.value = "";
+  inp.click();
+});
+$("openfile").addEventListener("change", () => {
+  const file = $("openfile").files[0];
+  if (!file) return;
+  file.text().then((text) => {
+    try {
+      const p = C.parseProjectText(text);
+      project = p;
+      selectedId = null;
+      armedType = null;
+      undoStack.length = 0;
+      redoStack.length = 0;
+      syncStripButtons();
+      syncArmedButtons();
+      refreshNumeric();
+      refreshBudget();
+      invalidate();
+    } catch (e) {
+      alert("open failed: " + e.message);
+    }
+  });
+});
+
+$("bsave").addEventListener("click", () => {
+  download(C.cIdentifier(project.name) + ".json", C.serializeProject(project) + "\n");
+});
+
+$("bexport").addEventListener("click", () => {
+  const baked = C.bake(project);
+  if (!baked.ok) { alert(baked.error); return; }
+  if (baked.overlaps.length) {
+    const pairs = baked.overlaps.map(([a, b]) => `${a.id} (${a.type}) <-> ${b.id} (${b.type})`);
+    alert("note: interpenetrating parts — the painter's algorithm cannot resolve " +
+          "interpenetrating geometry on device, so these may draw in the wrong " +
+          "order:\n  " + pairs.join("\n  ") + "\n\nexporting anyway.");
+  }
+  const hdr = C.emitHeader(project, baked);
+  download(hdr.fileName, hdr.text);
+});
+
+$("resetview").addEventListener("click", () => {
+  for (const p of Object.values(panels)) {
+    if (p.kind === "persp") {
+      p.az = PERSP_HOME.az;
+      p.orbitEl = PERSP_HOME.orbitEl;
+      p.dist = PERSP_HOME.dist;
+      p.target = PERSP_HOME.target.slice();
+    } else {
+      Object.assign(p, ORTHO_HOME);
+    }
+  }
+  invalidate();
+});
+
+$("bmode").addEventListener("click", () => {
+  shadedMode = !shadedMode;
+  syncStripButtons();
+  invalidate();
+});
+$("bsnap").addEventListener("click", () => {
+  project.snap = !project.snap;
+  syncStripButtons();
+});
+
+// space must never re-trigger the last-clicked button
+document.addEventListener("click", (e) => {
+  if (e.target instanceof HTMLButtonElement) e.target.blur();
+});
+
+// ---- budget line ----------------------------------------------------------
+
+function refreshBudget() {
+  const el = $("budget");
+  if (!project.parts.length) { el.textContent = ""; return; }
+  const c = C.countsOf(project.parts);
+  const b = C.budgetOf(c);
+  el.textContent = `${c.nv} v · ${c.nt} t · ${c.nf} f · ` +
+                   `${(b.flash / 1024).toFixed(1)} KB`;
+  el.title = `flash ${b.flash} B · renderer RAM ${b.ram} B` +
+             (b.over.length ? "\nOVER CAP:\n" + b.over.join("\n") : "");
+  el.classList.toggle("hot", b.hot || b.over.length > 0);
+}
+
+// ---- primitive menu -------------------------------------------------------
+
+const primButtons = {};
+for (const type of C.PRIM_ORDER) {
+  const btn = document.createElement("button");
+  btn.textContent = type;
+  btn.addEventListener("click", () => {
+    if (tool !== "select") {  // placement lives in the select tool
+      tool = "select";
+      moldCursor = null;
+      syncToolButtons();
+    }
+    armedType = armedType === type ? null : type;
+    ghost = null;
+    syncArmedButtons();
+    invalidate();
+    btn.blur();
+  });
+  $("prims").appendChild(btn);
+  primButtons[type] = btn;
+}
+function syncArmedButtons() {
+  for (const [type, btn] of Object.entries(primButtons))
+    btn.classList.toggle("armed", type === armedType);
+  for (const p of Object.values(panels))
+    p.el.classList.toggle("armed", !!armedType || tool === "mold");
+}
+
+// ---- tools section (select / mold + brush controls) -----------------------
+
+const toolButtons = {};
+for (const t of ["select", "mold"]) {
+  const btn = document.createElement("button");
+  btn.textContent = t;
+  btn.addEventListener("click", () => {
+    setTool(t === tool && t !== "select" ? "select" : t);
+    btn.blur();
+  });
+  $("tools").appendChild(btn);
+  toolButtons[t] = btn;
+}
+function setTool(t) {
+  tool = t;
+  if (t !== "select") {
+    armedType = null;
+    ghost = null;
+  }
+  gumballHover = null;
+  moldCursor = null;
+  syncToolButtons();
+  syncArmedButtons();
+  invalidate();
+}
+function syncToolButtons() {
+  for (const [t, btn] of Object.entries(toolButtons))
+    btn.classList.toggle("armed", t === tool);
+  brushPanel.style.display = tool === "mold" ? "" : "none";
+}
+
+// brush controls: log-scaled sliders (fine control at the small end) with a
+// live value readout, shown only while the mold tool is active
+const brushPanel = document.createElement("div");
+brushPanel.id = "brush";
+brushPanel.style.display = "none";
+$("tools").appendChild(brushPanel);
+
+const BRUSH_SIZE_RANGE = [0.02, 2];
+const BRUSH_STRENGTH_RANGE = [0.005, 0.5];
+
+function brushSlider(labelText, range, get, set) {
+  const [min, max] = range;
+  const row = document.createElement("div");
+  row.className = "brow";
+  const label = document.createElement("label");
+  const inp = document.createElement("input");
+  inp.type = "range";
+  inp.min = "0";
+  inp.max = "100";
+  inp.step = "1";
+  const sync = () => {
+    label.textContent = `${labelText} ${fmtNum(get(), 2)}`;
+    inp.value = String(Math.round(100 * Math.log(get() / min) / Math.log(max / min)));
+  };
+  inp.addEventListener("input", () => {
+    set(min * Math.pow(max / min, parseFloat(inp.value) / 100));
+    label.textContent = `${labelText} ${fmtNum(get(), 2)}`;
+    invalidate();
+  });
+  inp.addEventListener("change", () => inp.blur());
+  row.appendChild(label);
+  row.appendChild(inp);
+  brushPanel.appendChild(row);
+  sync();
+  return { sync };
+}
+const sizeSlider = brushSlider("size", BRUSH_SIZE_RANGE,
+    () => brushSize,
+    (v) => {
+      if (moldCursor) moldCursor.rpx = Math.max(2, moldCursor.rpx * v / brushSize);
+      brushSize = v;
+    });
+const strengthSlider = brushSlider("strength", BRUSH_STRENGTH_RANGE,
+    () => brushStrength,
+    (v) => { brushStrength = v; });
+function syncBrushInputs() {
+  sizeSlider.sync();
+  strengthSlider.sync();
+}
+
+// ---- numeric panel --------------------------------------------------------
+
+const np = $("numpanel");
+// the built panel: the part object it was built for plus every input with
+// its value getter, so commits and drag-ends refresh values in place — a
+// full DOM rebuild would destroy the input a Tab keypress is moving into
+let npState = null;  // { part, entries: [{ input, get }] }
+
+function fmtNum(v, digits) {
+  return String(parseFloat(v.toFixed(digits === undefined ? 4 : digits)));
+}
+
+function numRow(labelText, inputs) {
+  const row = document.createElement("div");
+  row.className = "nprow" + (inputs.length > 1 ? " nptriple" : "");
+  if (labelText) {
+    const label = document.createElement("label");
+    label.textContent = labelText;
+    row.appendChild(label);
+  }
+  for (const i of inputs) row.appendChild(i);
+  return row;
+}
+
+// numeric commits are one undo gesture each (Enter/blur with a changed value)
+function numInput(entries, get, apply) {
+  const inp = document.createElement("input");
+  inp.value = get();
+  entries.push({ input: inp, get });
+  inp.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") inp.blur();
+    e.stopPropagation();  // field keys never reach the global handler
+  });
+  inp.addEventListener("change", () => {
+    const v = parseFloat(inp.value);
+    if (!isFinite(v)) { refreshNumeric(); return; }
+    const pre = snapshot();
+    if (apply(v)) { pushUndo(pre); refreshBudget(); invalidate(); }
+    refreshNumeric();
+  });
+  return inp;
+}
+
+function refreshNumeric() {
+  const part = selectedPart();
+  // same part object still shown -> update unfocused values in place. Any
+  // change of identity (select, delete, undo's fresh objects) rebuilds.
+  if (npState && part && npState.part === part) {
+    for (const en of npState.entries)
+      if (document.activeElement !== en.input) en.input.value = en.get();
+    return;
+  }
+  npState = null;
+  np.textContent = "";
+  if (!part) return;  // no selection: the panel stays empty
+  const entries = [];
+  const title = document.createElement("div");
+  title.className = "nptitle";
+  title.textContent = `${part.type} · ${part.id}`;
+  np.appendChild(title);
+
+  const sect = (t) => {
+    const d = document.createElement("div");
+    d.className = "npsect";
+    d.textContent = t;
+    np.appendChild(d);
+  };
+
+  // native constructor params (tessellation control lives here — D12)
+  for (const spec of C.PRIMS[part.type].params) {
+    const inp = numInput(entries, () => fmtNum(part.params[spec.k]), (v) => {
+      const nv = spec.int ? Math.max(1, Math.floor(v)) : v;
+      const trial = { ...part.params, [spec.k]: nv };
+      if (C.generate(part.type, trial).nverts === 0) {
+        alert(`invalid ${spec.k}: the ${part.type} generator rejects it`);
+        return false;
+      }
+      part.params = trial;
+      touch(part);
+      return true;
+    });
+    np.appendChild(numRow(spec.k, [inp]));
+  }
+
+  const triple = (label, get, apply) => {
+    sect(label);
+    const inputs = [0, 1, 2].map((axis) =>
+      numInput(entries, () => get(axis), (v) => apply(axis, v)));
+    np.appendChild(numRow("", inputs));
+  };
+  triple("position", (a) => fmtNum(part.position[a]), (a, v) => {
+    part.position[a] = v;
+    touch(part);
+    return true;
+  });
+  // stored radians, displayed degrees (D6)
+  triple("rotation °", (a) => fmtNum(part.rotation[a] * 180 / Math.PI, 2), (a, v) => {
+    part.rotation[a] = v * Math.PI / 180;
+    touch(part);
+    return true;
+  });
+  triple("scale", (a) => fmtNum(part.scale[a]), (a, v) => {
+    if (!(v >= C.MIN_SCALE)) {
+      alert("scale must be positive (mirroring would flip the winding; rotation reaches every mirrored pose)");
+      return false;
+    }
+    part.scale[a] = v;
+    touch(part);
+    return true;
+  });
+  npState = { part, entries };
+}
+
+// ---- placement / selection / drag gestures --------------------------------
+
+function panelMouse(p, e) {
+  const rect = p.el.getBoundingClientRect();
+  return [e.clientX - rect.left, e.clientY - rect.top];
+}
+
+function snapPos(v) { return snapTo(v, SNAP_POS); }
+
+function placementPoint(p, cam, mx, my, alt) {
+  let pos = null;
+  if (p.kind === "ortho") {
+    pos = orthoFromScreen(p, mx, my);
+  } else {
+    const hit = groundHit(p, perspRay(p, cam, mx, my), 0, false);
+    if (!hit) return null;  // ghost pins to the last valid point; click no-ops
+    pos = hit;
+  }
+  if (project.snap && !alt) pos = pos.map(snapPos);
+  return pos;
+}
+
+// model axis direction (world space) of the part's local axis a — the axis
+// lock is a model-axis lock: a world-axis stretch of a rotated part is
+// inexpressible pre-rotation, and the numeric panel is the tool for that.
+function modelAxisDir(rot, a) {
+  const R = C.eulerXYZ(rot[0], rot[1], rot[2]);
+  return [R[a], R[3 + a], R[6 + a]];
+}
+
+// clone a part in place (fresh id, identical transform) and select it —
+// shared by Ctrl/Cmd+D (which then offsets one snap step) and the
+// Ctrl/Cmd+drag duplicate gesture (which drags the copy out).
+function cloneInPlace(part) {
+  const dup = C.mintPart(project, part.type);
+  dup.params = { ...part.params };
+  dup.position = part.position.slice();
+  dup.rotation = part.rotation.slice();
+  dup.scale = part.scale.slice();
+  const dabs = C.moldedDabs(part);
+  if (dabs) dup.mold = { dabs: dabs.map((d) => ({ at: d.at.slice(), r: d.r, s: d.s })) };
+  project.parts.push(dup);
+  selectedId = dup.id;
+  return dup;
+}
+
+function beginDrag(p, cam, part, mx, my, e, kindOverride) {
+  const kind = kindOverride ||
+      (keysDown.has("r") ? "rotate" : keysDown.has("s") ? "scale" : "move");
+  const d = {
+    kind, panel: p, cam,
+    part,
+    startMx: mx, startMy: my,
+    preState: snapshot(),
+    origPos: part.position.slice(),
+    origRot: part.rotation.slice(),
+    origScale: part.scale.slice(),
+    axis: null,          // 'x' | 'y' | 'z' model-axis lock (X/Y/Z taps)
+    mutated: false,
+  };
+  if (kind === "rotate") {
+    // drag angle around the part's projected center; perpendicular axis per
+    // panel (perspective: world Y — driven by horizontal drag instead)
+    let cx, cy;
+    if (p.kind === "ortho") [cx, cy] = orthoToScreen(p, part.position);
+    else {
+      const pr = perspProject(cam, part.position);
+      if (pr.clip) return null;
+      cx = pr.x;
+      cy = pr.y;
+    }
+    d.centerX = cx;
+    d.centerY = cy;
+    d.startAngle = Math.atan2(-(my - cy), mx - cx);
+  }
+  if (kind === "move" && p.kind === "persp") {
+    // delta-based: the part moves by the ray-hit delta in the horizontal
+    // plane y = part.y — elevation preserved, no grab-jump
+    const hit = groundHit(p, perspRay(p, cam, mx, my), part.position[1], true);
+    if (!hit) return null;
+    d.grab = hit;
+  }
+  return d;
+}
+
+// a gumball handle drag: the handle fixes both the kind and the model axis
+// at mousedown; the gesture machinery (preState, mutated, Esc-abort, undo
+// push at mouseup) is shared with the modifier-key drags.
+function beginGumballDrag(p, cam, part, gb, hit, mx, my) {
+  const e = gb.axes[hit.axis];
+  const d = {
+    kind: "g" + hit.type,  // gmove | grotate | gscale
+    gumball: hit,
+    panel: p, cam, part,
+    startMx: mx, startMy: my,
+    preState: snapshot(),
+    origPos: part.position.slice(),
+    origRot: part.rotation.slice(),
+    origScale: part.scale.slice(),
+    axis: null,
+    mutated: false,
+    gAxisW: e.w.slice(),
+    gDir: e.dir ? e.dir.slice() : null,
+    gPxPerWorld: e.pxPerWorld,
+  };
+  if (hit.type === "rotate") {
+    d.centerX = gb.so[0];
+    d.centerY = gb.so[1];
+    d.startAngle = Math.atan2(-(my - gb.so[1]), mx - gb.so[0]);
+    // apparent screen direction of a +theta model-axis rotation follows the
+    // side of the screen plane the axis points to (same rule the panel
+    // rotations commit to): screen-CCW = +theta iff the axis runs with the
+    // view's forward direction
+    const fwd = p.kind === "ortho" ? p.forward : cam.basis.f;
+    d.gSign = dot3(e.w, fwd) >= 0 ? 1 : -1;
+  } else if (!d.gDir) {
+    return null;  // foreshortened axis carries no move/scale handle
+  }
+  return d;
+}
+
+function updateDrag(e) {
+  const d = drag;
+  const p = d.panel;
+  const [mx, my] = panelMouse(p, e);
+  const part = d.part;
+  const alt = e.altKey;
+  const snapOn = project.snap && !alt;
+
+  if (d.kind === "mold") {
+    // a stroke: raycast the live surface, lay a dab per quarter-brush of
+    // surface travel; the cursor circle tracks the deforming surface
+    const ray = panelRay(p, d.cam, mx, my);
+    const hit = raycastPartWorld(d.part, ray);
+    if (hit) {
+      if (!d.lastDabAt || len3(sub3(hit.point, d.lastDabAt)) >= brushSize * 0.25)
+        applyMoldDab(d, hit.point);
+    }
+    moldCursor = computeMoldCursor(p, d.cam || null, mx, my);
+    invalidate();
+    return;
+  }
+  if (d.kind === "gmove") {
+    // distance along the handle's screen direction, converted to world
+    // units at the mousedown baseline; snap quantizes the axis distance
+    let dist = ((mx - d.startMx) * d.gDir[0] + (my - d.startMy) * d.gDir[1]) / d.gPxPerWorld;
+    if (snapOn) dist = snapTo(dist, SNAP_POS);
+    part.position = add3(d.origPos, mul3(d.gAxisW, dist));
+  } else if (d.kind === "grotate") {
+    const a = Math.atan2(-(my - d.centerY), mx - d.centerX);
+    let theta = (a - d.startAngle) * d.gSign;
+    if (snapOn) theta = snapTo(theta, SNAP_ROT);
+    part.rotation = C.rotateEulerAboutModelAxis(d.origRot, "xyz"[d.gumball.axis], theta);
+  } else if (d.kind === "gscale") {
+    const f = Math.pow(2, ((mx - d.startMx) * d.gDir[0] + (my - d.startMy) * d.gDir[1]) / 100);
+    const s = d.origScale.slice();
+    if (e.shiftKey) {
+      // Shift: uniform — the grabbed handle drives all three axes. Live per
+      // move (recomputed from the mousedown baseline), so holding or
+      // releasing Shift mid-drag switches modes without drift.
+      for (let k = 0; k < 3; ++k) s[k] = Math.max(C.MIN_SCALE, d.origScale[k] * f);
+    } else {
+      s[d.gumball.axis] = Math.max(C.MIN_SCALE, d.origScale[d.gumball.axis] * f);
+    }
+    part.scale = s;
+  } else if (d.kind === "move") {
+    let pos;
+    if (p.kind === "ortho") {
+      const dwx = (mx - d.startMx) / p.zoom;
+      const dwy = -(my - d.startMy) / p.zoom;
+      const delta = add3(mul3(p.right, dwx), mul3(p.up, dwy));
+      if (d.axis) {
+        const dir = modelAxisDir(d.origRot, { x: 0, y: 1, z: 2 }[d.axis]);
+        let dist = dot3(delta, dir);
+        if (snapOn) dist = snapTo(dist, SNAP_POS);
+        pos = add3(d.origPos, mul3(dir, dist));
+      } else {
+        pos = add3(d.origPos, delta);
+        if (snapOn)
+          for (let k = 0; k < 3; ++k)
+            if (p.right[k] !== 0 || p.up[k] !== 0) pos[k] = snapPos(pos[k]);
+      }
+    } else {
+      const hit = groundHit(p, perspRay(p, d.cam, mx, my), d.origPos[1], true);
+      if (!hit) return;
+      const delta = sub3(hit, d.grab);  // horizontal by construction
+      if (d.axis) {
+        const dir = modelAxisDir(d.origRot, { x: 0, y: 1, z: 2 }[d.axis]);
+        let dist = dot3(delta, dir);
+        if (snapOn) dist = snapTo(dist, SNAP_POS);
+        pos = add3(d.origPos, mul3(dir, dist));
+      } else {
+        pos = add3(d.origPos, delta);
+        if (snapOn) {
+          pos[0] = snapPos(pos[0]);
+          pos[2] = snapPos(pos[2]);
+        }
+      }
+    }
+    part.position = pos;
+  } else if (d.kind === "rotate") {
+    let theta;
+    let axis, sign;
+    if (p.kind === "persp") {
+      axis = "y";
+      theta = -(mx - d.startMx) * 0.01;
+    } else {
+      const a = Math.atan2(-(my - d.centerY), mx - d.centerX);
+      const screenTheta = a - d.startAngle;
+      // the panel triple (right, up, out-of-screen) is left-handed — the
+      // bases commit to forward-into-scene (det +1) — so a screen-CCW drag
+      // is +theta about the FORWARD axis: front +Z ('z', +1), side -X
+      // ('x', -1), top -Y ('y', -1). Verified by marker math: on the front
+      // panel Rz(+10°) moves the east marker to the north-east (CCW).
+      if (p.name === "front") { axis = "z"; sign = 1; }
+      else if (p.name === "side") { axis = "x"; sign = -1; }
+      else { axis = "y"; sign = -1; }
+      theta = sign * screenTheta;
+    }
+    if (snapOn) theta = snapTo(theta, SNAP_ROT);
+    part.rotation = C.rotateEulerAboutAxis(d.origRot, axis, theta);
+  } else if (d.kind === "scale") {
+    // exponential, never center-relative; clamped to epsilon (D7)
+    const f = Math.pow(2, (mx - d.startMx) / 100);
+    const s = d.origScale.slice();
+    if (d.axis) {
+      const a = { x: 0, y: 1, z: 2 }[d.axis];
+      s[a] = Math.max(C.MIN_SCALE, d.origScale[a] * f);
+    } else {
+      for (let k = 0; k < 3; ++k) s[k] = Math.max(C.MIN_SCALE, d.origScale[k] * f);
+    }
+    part.scale = s;
+  }
+  d.mutated = true;
+  touch(part);
+  invalidate();
+}
+
+function endDrag(commit) {
+  const d = drag;
+  drag = null;
+  for (const p of Object.values(panels)) p.el.classList.remove("dragging");
+  if (!d) return;
+  if (d.timer) clearInterval(d.timer);  // stop mold accumulation on any exit
+  if (!commit || !d.mutated) {
+    if (d.mutated) {
+      restore(d.preState);  // Esc aborts to the mousedown state
+      // an aborted duplicate-drag removed the clone; select its source again
+      if (d.dupSourceId && project.parts.some((q) => q.id === d.dupSourceId)) {
+        selectedId = d.dupSourceId;
+        refreshNumeric();
+        invalidate();
+      }
+    }
+    return;
+  }
+  pushUndo(d.preState);
+  refreshNumeric();
+  refreshBudget();
+  invalidate();
+}
+
+for (const p of Object.values(panels)) {
+  const canvas = p.canvas;
+  canvas.addEventListener("contextmenu", (e) => e.preventDefault());
+
+  canvas.addEventListener("mousedown", (e) => {
+    const [mx, my] = panelMouse(p, e);
+    const cam = p.kind === "persp" ? perspCamera(p) : null;
+    // Safari reports macOS Ctrl+click as button 2 — that combination is the
+    // duplicate-drag gesture, never navigation, in every browser
+    if (e.button === 2 && !e.ctrlKey) {
+      if (drag) return;  // navigation is refused while a transform drag runs
+      navDrag = { p, lastX: e.clientX, lastY: e.clientY };
+      return;
+    }
+    if (e.button !== 0 && !(e.button === 2 && e.ctrlKey)) return;
+    if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
+    // Ctrl/Cmd + any transform drag performs it on a fresh duplicate — the
+    // copy is minted at the original's transform and dragged out from under
+    // it. Mint + drag commit as ONE undo step; Esc removes the copy whole.
+    const wantDup = e.ctrlKey || e.metaKey;
+
+    if (armedType) {
+      // one click places one part and returns to select mode (D5)
+      const pos = placementPoint(p, cam, mx, my, e.altKey);
+      if (!pos) return;
+      pushUndo();
+      const part = C.mintPart(project, armedType);
+      part.position = pos;
+      project.parts.push(part);
+      selectedId = part.id;
+      armedType = null;
+      ghost = null;
+      syncArmedButtons();
+      refreshNumeric();
+      refreshBudget();
+      invalidate();
+      return;
+    }
+
+    if (tool === "mold") {
+      const sel = selectedPart();
+      if (sel) {
+        const hit = raycastPartWorld(sel, panelRay(p, cam, mx, my));
+        if (hit) {
+          drag = beginMoldDrag(p, cam, sel, hit, e);
+          p.el.classList.add("dragging");
+          return;
+        }
+      }
+      // off-surface click: plain selection, so you can switch parts mid-mold
+      const pick = pickPart(p, cam, mx, my);
+      if ((pick && pick.id) !== selectedId) {
+        selectedId = pick ? pick.id : null;
+        refreshNumeric();
+        invalidate();
+      }
+      return;
+    }
+
+    // starts a drag on `part`, optionally on a fresh duplicate of it. The
+    // clone shares the original's transform, so drag baselines (gumball
+    // geometry included) computed from either are identical.
+    const startDrag = (part, makeDrag) => {
+      let pre = null, target = part;
+      if (wantDup) {
+        pre = snapshot();
+        target = cloneInPlace(part);
+        refreshNumeric();
+        refreshBudget();
+        invalidate();
+      }
+      const d = makeDrag(target);
+      if (!d) {
+        if (pre) {
+          restore(pre);  // drag couldn't start: unwind the clone
+          selectedId = part.id;  // back to the source part
+          refreshNumeric();
+          invalidate();
+        }
+        return;
+      }
+      if (pre) {
+        d.preState = pre;      // one gesture: undo removes the copy + its move
+        d.mutated = true;      // the mint itself already mutated the project
+        d.dupSourceId = part.id;
+      }
+      drag = d;
+      p.el.classList.add("dragging");
+    };
+
+    // the selected part's gumball takes the click before any picking —
+    // its handles may float over empty space or other parts (Rhino rules)
+    const gbPart = selectedPart();
+    if (gbPart) {
+      const gb = computeGumball(p, cam, gbPart);
+      const gHit = hitGumball(gb, mx, my);
+      if (gHit) {
+        startDrag(gbPart, (target) => gHit.type === "center"
+            ? beginDrag(p, cam, target, mx, my, e, "move")
+            : beginGumballDrag(p, cam, target, gb, gHit, mx, my));
+        return;
+      }
+    }
+
+    const hitPart = pickPart(p, cam, mx, my);
+    if (!hitPart) {
+      if (selectedId !== null) {
+        selectedId = null;
+        refreshNumeric();
+        invalidate();
+      }
+      return;
+    }
+    if (!wantDup && hitPart.id !== selectedId) {
+      selectedId = hitPart.id;
+      refreshNumeric();
+      invalidate();
+    }
+    startDrag(hitPart, (target) => beginDrag(p, cam, target, mx, my, e));
+  });
+
+  canvas.addEventListener("mousemove", (e) => {
+    if (armedType && !drag && !navDrag) {
+      const [mx, my] = panelMouse(p, e);
+      const cam = p.kind === "persp" ? perspCamera(p) : null;
+      const pos = placementPoint(p, cam, mx, my, e.altKey);
+      if (pos) ghost = { pos, valid: true };
+      // an invalid perspective point pins the ghost where it last was
+      invalidate();
+    } else if (!drag && !navDrag) {
+      const [mx, my] = panelMouse(p, e);
+      const cam = p.kind === "persp" ? perspCamera(p) : null;
+      if (tool === "mold") {
+        moldCursor = computeMoldCursor(p, cam, mx, my);
+        invalidate();
+        return;
+      }
+      // gumball hover highlight
+      const sel = selectedPart();
+      const hit = sel ? hitGumball(computeGumball(p, cam, sel), mx, my) : null;
+      if (!sameGumballHit(hit, gumballHover)) {
+        gumballHover = hit;
+        invalidate();
+      }
+    }
+  });
+
+  canvas.addEventListener("wheel", (e) => {
+    e.preventDefault();
+    // a mid-drag zoom/dolly would rescale the gesture's accumulated delta
+    // and desync the drag's cached camera — navigation waits its turn
+    if (drag) return;
+    const k = Math.exp(e.deltaY * 0.0015);
+    if (p.kind === "ortho") {
+      // zoom about the cursor: the world point under it stays put
+      const [mx, my] = panelMouse(p, e);
+      const before = orthoFromScreen(p, mx, my);
+      p.zoom = Math.min(2000, Math.max(4, p.zoom / k));
+      const after = orthoFromScreen(p, mx, my);
+      p.panX += dot3(p.right, before) - dot3(p.right, after);
+      p.panY += dot3(p.up, before) - dot3(p.up, after);
+    } else {
+      p.dist = Math.min(120, Math.max(0.5, p.dist * k));
+    }
+    invalidate();
+  }, { passive: false });
+}
+
+window.addEventListener("mousemove", (e) => {
+  lastMouse.x = e.clientX;
+  lastMouse.y = e.clientY;
+  if (navDrag) {
+    const dx = e.clientX - navDrag.lastX, dy = e.clientY - navDrag.lastY;
+    navDrag.lastX = e.clientX;
+    navDrag.lastY = e.clientY;
+    const p = navDrag.p;
+    if (p.kind === "persp") {
+      p.az -= dx * 0.01;
+      p.orbitEl = Math.min(1.55, Math.max(-1.55, p.orbitEl + dy * 0.01));
+    } else {
+      p.panX -= dx / p.zoom;
+      p.panY += dy / p.zoom;
+    }
+    invalidate();
+    return;
+  }
+  if (drag) updateDrag(e);
+});
+window.addEventListener("mouseup", (e) => {
+  if (e.button === 2) navDrag = null;
+  // button 2 also ends transform drags: Safari delivers macOS Ctrl+drag
+  // (the duplicate gesture) entirely as button-2 events
+  if ((e.button === 0 || e.button === 2) && drag) endDrag(true);
+});
+window.addEventListener("blur", () => {
+  keysDown.clear();
+  shiftDown = false;
+  navDrag = null;
+  if (drag) endDrag(true);
+});
+
+// ---- keyboard -------------------------------------------------------------
+
+function inTextField() {
+  const el = document.activeElement;
+  return el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA");
+}
+
+// the hovered panel resolved geometrically against the last mousemove
+// position — never from enter/leave events, which go stale when the layout
+// swaps under a stationary cursor
+function hoveredPanel() {
+  for (const p of Object.values(panels)) {
+    if (fullPanel && p.name !== fullPanel) continue;
+    const r = p.el.getBoundingClientRect();
+    if (lastMouse.x >= r.left && lastMouse.x < r.right &&
+        lastMouse.y >= r.top && lastMouse.y < r.bottom) return p;
+  }
+  return null;
+}
+
+function toggleFullscreen() {
+  if (drag || navDrag) return;  // refused while a drag is active
+  const container = $("panels");
+  if (fullPanel) {
+    fullPanel = null;
+    container.classList.remove("full");
+    for (const p of Object.values(panels)) p.el.classList.remove("fullpanel");
+  } else {
+    const p = hoveredPanel();
+    if (!p) return;
+    fullPanel = p.name;
+    container.classList.add("full");
+    p.el.classList.add("fullpanel");
+  }
+  // the ResizeObserver fires on the layout swap and re-renders immediately
+}
+
+document.addEventListener("keydown", (e) => {
+  // Shift state is tracked unconditionally (before the text-field guard) so
+  // the uniform-scale highlight can never stick
+  if (e.key === "Shift" && !shiftDown) {
+    shiftDown = true;
+    if ((gumballHover && gumballHover.type === "scale") ||
+        (drag && drag.kind === "gscale")) invalidate();
+  }
+  if (inTextField()) return;  // Backspace edits the field, never deletes a part
+  const key = e.key.toLowerCase();
+  const mod = e.ctrlKey || e.metaKey;
+
+  if (e.key === "Alt") { e.preventDefault(); return; }
+  if (key === " ") {
+    e.preventDefault();          // never scroll, never re-trigger a button
+    if (!e.repeat) toggleFullscreen();
+    return;
+  }
+  if (mod && key === "d") {
+    e.preventDefault();
+    const part = selectedPart();
+    if (!part || drag) return;  // no mid-gesture snapshots (D11)
+    pushUndo();
+    const dup = cloneInPlace(part);
+    dup.position[0] += SNAP_POS;  // offset one snap step
+    refreshNumeric();
+    refreshBudget();
+    invalidate();
+    return;
+  }
+  if (mod && key === "z") {
+    e.preventDefault();
+    if (drag) return;  // no history surgery mid-gesture
+    if (e.shiftKey) doRedo();
+    else doUndo();
+    return;
+  }
+  if (mod) return;
+
+  if (e.key === "Escape") {
+    if (drag) { endDrag(false); return; }
+    if (tool !== "select") { setTool("select"); return; }
+    if (armedType) {
+      armedType = null;
+      ghost = null;
+      syncArmedButtons();
+      invalidate();
+      return;
+    }
+    if (selectedId !== null) {
+      selectedId = null;
+      refreshNumeric();
+      invalidate();
+    }
+    return;
+  }
+  // [ / ] resize the mold brush (sculpt-app muscle memory); the on-screen
+  // circle rescales immediately, exact center refresh on the next move
+  if (tool === "mold" && (e.key === "[" || e.key === "]")) {
+    const next = Math.min(BRUSH_SIZE_RANGE[1],
+        Math.max(BRUSH_SIZE_RANGE[0], brushSize * (e.key === "]" ? 1.25 : 0.8)));
+    if (moldCursor) moldCursor.rpx = Math.max(2, moldCursor.rpx * next / brushSize);
+    brushSize = next;
+    syncBrushInputs();
+    invalidate();
+    return;
+  }
+  if (e.key === "Delete" || e.key === "Backspace") {
+    const part = selectedPart();
+    if (!part || drag) return;
+    pushUndo();
+    project.parts = project.parts.filter((q) => q !== part);
+    selectedId = null;
+    refreshNumeric();
+    refreshBudget();
+    invalidate();
+    return;
+  }
+  // X/Y/Z tap-lock refines the current drag (never changes its kind);
+  // re-tapping the locked axis unlocks. A held key is one tap (!e.repeat).
+  // Gumball drags carry their axis in the grabbed handle — no taps.
+  if (drag && !e.repeat && (key === "x" || key === "y" || key === "z") &&
+      (drag.kind === "move" || drag.kind === "scale")) {
+    drag.axis = drag.axis === key ? null : key;
+    return;
+  }
+  if (key === "r" || key === "s") keysDown.add(key);  // sampled at mousedown only
+});
+document.addEventListener("keyup", (e) => {
+  if (e.key === "Alt") e.preventDefault();  // Alt keyup focuses menus otherwise
+  if (e.key === "Shift" && shiftDown) {
+    shiftDown = false;
+    if ((gumballHover && gumballHover.type === "scale") ||
+        (drag && drag.kind === "gscale")) invalidate();
+  }
+  keysDown.delete(e.key.toLowerCase());
+});
+
+// ---- dev parity page (#dev) -----------------------------------------------
+
+function bootDev() {
+  document.getElementById("app").style.display = "none";
+  const dev = $("dev");
+  dev.classList.add("on");
+  dev.innerHTML = `
+    <h1>generator parity — JS ports vs TD_Primitives.cpp</h1>
+    <p>build and run <code>extras/dev/dump_primitives.cpp</code> (compile command
+    in its header), then load the resulting <code>primitives_dump.json</code>.
+    Indices must match exactly, floats to 1e-6.</p>
+    <p><input type="file" id="devfile" accept=".json"></p>
+    <div id="devout"></div>`;
+  // file content is untrusted for innerHTML purposes: escape everything
+  const esc = (s) => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+  $("devfile").addEventListener("change", () => {
+    const inp = $("devfile");
+    const f = inp.files[0];
+    inp.value = "";  // re-selecting the same regenerated file must re-fire
+    if (!f) return;
+    f.text().then((text) => {
+      try {
+        const dump = JSON.parse(text);
+        if (!dump || !Array.isArray(dump.cases))
+          throw new Error("no cases[] array — is this really primitives_dump.json?");
+        const res = C.diffPrimitives(dump);
+        const rows = res.results.map((r) =>
+          `<tr><td>${esc(r.name)}</td><td class="${r.ok ? "" : "fail"}">${r.ok ? "pass" : "FAIL"}</td>` +
+          `<td>${r.problems.slice(0, 6).map(esc).join("<br>")}</td></tr>`).join("");
+        $("devout").innerHTML =
+          `<p><b>${res.ok ? "ALL CASES MATCH" : "MISMATCHES FOUND"}</b></p>` +
+          `<table><tr><th>case</th><th>result</th><th>detail</th></tr>${rows}</table>`;
+      } catch (e) {
+        $("devout").textContent = "could not diff this file: " + e.message;
+      }
+    });
+  });
+}
+
+// ---- boot -----------------------------------------------------------------
+
+if (location.hash === "#dev") {
+  bootDev();
+} else {
+  syncStripButtons();
+  syncArmedButtons();
+  syncToolButtons();
+  refreshNumeric();
+  refreshBudget();
+  for (const p of Object.values(panels)) panelSize(p);
+  invalidate();
+}
+
+// headless smoke-test handle: the dev harness boots this file against a DOM
+// stub and asserts every panel draws finite coordinates (the class of bug a
+// code review can't see: silent NaNs draw nothing and throw nothing).
+window.__td = {
+  panels, renderAll,
+  loadProject(text) {
+    project = C.parseProjectText(text);
+    selectedId = null;
+    refreshNumeric();
+    refreshBudget();
+    invalidate();
+  },
+  select(id) {
+    selectedId = id;
+    refreshNumeric();
+    invalidate();
+  },
+};
+})();
+</script>
+</body>
+</html>
