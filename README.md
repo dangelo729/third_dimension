@@ -8,7 +8,7 @@
 Spinning logos, model viewers, dashboards, and toys on small OLED/TFT displays, without
 porting a PC engine.
 
-> **Status: pre-release, feature-complete on host (v0.1.0).** The full pipeline is
+> **Status: pre-release, feature-complete on host (v0.2.0).** The full pipeline is
 > implemented and the complete host suite passes with bit-exact golden pins. Still ahead
 > of registry publication: on-hardware validation and measured performance.
 
@@ -23,12 +23,13 @@ porting a PC engine.
   the minimal sketch is ~20 lines with no camera, light, or focal-length code.
 - A proven pipeline: transform → project → per-triangle back-face cull → one global
   painter sort → Gouraud shade → span rasterization.
-- Four render modes (`TD_SHADED`, `TD_SOLID`, `TD_WIREFRAME`, and `TD_CEL` — banded
-  cel/toon shading with switchable outline ink) on pluggable render targets: 1-bit (with
+- Five render modes (`TD_SHADED`, `TD_SOLID`, `TD_WIREFRAME`, `TD_CEL` — banded
+  cel/toon shading with switchable outline ink — and `TD_OUTLINE` — view-dependent
+  feature lines with hidden-line removal) on pluggable render targets: 1-bit (with
   **10 switchable dither methods**), RGB565, Adafruit_GFX, or your own subclass in 3
   overrides — see the table below.
 - A complete asset pipeline: any OBJ (PicoCAD included) → `tools/obj2mesh.py` →
-  flash-resident mesh header. Plus 7 procedural primitives.
+  flash-resident mesh header. Plus 8 procedural primitives.
 - Host-tested, with CI-pinned bit-exact golden frame hashes.
 
 **It is not:**
@@ -177,6 +178,34 @@ are all true edges — the hand-drawn look — not silhouette-only; `TD_CEL_INK_
 pure screentone bands. See `CelGallery` and [`extras/docs/limits.md`](extras/docs/limits.md)
 for band-count vs dither-method guidance.
 
+## Outline (feature-line) rendering
+
+`TD_OUTLINE` draws only the *lines that matter*: **silhouette** edges (where the
+surface turns away from the camera — view-dependent, they migrate as objects rotate),
+**crease** edges (dihedrals sharper than a threshold — the drawn-on feature lines),
+and **boundary** edges (open-mesh borders). Faces fill at the background shade, so the
+painter's algorithm erases hidden lines for free — the pen-and-ink / Obra Dinn look.
+The signature read: a cone poking out of a sphere front-on shows a distinct ring inside
+the sphere's contour; side-on it fuses into one continuous outline.
+
+```cpp
+scene.setRenderMode(TD_OUTLINE);   // ink is white (shade 2.0) on black fills
+scene.setOutlineCrease(radians(45));  // dihedral threshold; default 60° matches
+                                      // the converter's smoothing angle
+scene.prebuildOutline();           // optional: build edge tables in setup(),
+                                   // where an allocation failure is visible
+```
+
+Edge adjacency is built automatically per mesh and cached by the renderer (3 bytes per
+polygon-loop entry) — zero sketch boilerplate, no converter or mesh-format change.
+`TD_MATERIAL_WHITE` faces fill solid white instead of background (eyeballs, highlights);
+decal faces are skipped entirely under this mode. Because only the endpoint shades 0.0
+and 2.0 ever reach the target, the frame is **identical under every dither method** —
+under `TD_OUTLINE`, diffusion's 64 KB buffers buy nothing over `TD_DITHER_BAYER8`. If a
+mesh's topology changes at runtime (or a mesh is freed mid-session), call
+`renderer().invalidateOutline(&mesh)`. See `OutlineGallery` and
+[`extras/docs/limits.md`](extras/docs/limits.md) for the classification envelope.
+
 ## More lights
 
 ```cpp
@@ -218,20 +247,24 @@ no flags (export OBJ, not the raw `.txt`). Flags and pipeline internals are in
 | Sketch | Shows |
 |---|---|
 | `SpinningCube` | the minimal sketch above |
-| `PrimitivesTour` | all 7 primitives (box, sphere, cylinder, cone, prism, torus, plane) on a turntable |
+| `PrimitivesTour` | all 8 primitives (box, sphere, ellipsoid, cylinder, cone, prism, torus, plane) on a turntable |
 | `SolarSystem` | multi-object scenes and painter occlusion |
 | `ImportedModel` | a converted OBJ; a button cycles dither methods |
 | `DitherGallery` | auto-cycles all 10 methods, names over Serial |
 | `CelGallery` | cel shading: band counts, ink styles, and the ordered dithers on a torus |
+| `OutlineGallery` | feature-line rendering: a primitives tour, a crease-angle sweep, and two-object hidden lines |
 | `ColorCube_SSD1331` | the RGB565 framebuffer path with a burst push |
 | `CustomTarget_NoGFX` | a raw pixel-callback target with zero dependencies |
 
 ## Memory model
 
-- Renderer working buffers: **12 B/vertex + 16 B/face + ~104 B/object**, summed over the
+- Renderer working buffers: **12 B/vertex + 17 B/face + ~108 B/object**, summed over the
   visible scene; exact-fit high-water reallocation, grown only on success. A failed grow
   leaves the target untouched and `render()` returns `false` with `TD_ERR_ALLOC`.
   `reserve()` moves allocation into `setup()`; `releaseBuffers()` gives it back.
+- Outline edge tables (`TD_OUTLINE` only): **3 B per polygon-loop entry** per distinct
+  mesh, built once and cached (default sphere ≈ 1.4 KB); freed by `releaseBuffers()` /
+  `invalidateOutline()`.
 - Diffusion dithers (`FLOYD`/`ATKINSON`): **8 B/pixel** (64 KB at 128×64), allocated at
   `setDither()`/`reserve()`, never mid-frame.
 - Procedural primitives: one `malloc` per mesh (default box 696 B, default sphere ≈

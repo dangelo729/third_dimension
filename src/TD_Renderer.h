@@ -11,6 +11,8 @@
 
 class TD_Scene;
 class TD_Camera;
+struct TD_EdgeTable;          // internal/td_edge_table.h
+struct TD_OutlineCacheEntry;  // TD_Renderer.cpp: cached per-mesh edge tables
 
 // the engine: transform -> project -> per-triangle back-face cull -> one
 // global painter sort across all objects -> Gouraud shade -> scanline spans
@@ -53,8 +55,27 @@ class TD_Renderer {
   // runtime winding flip for meshes wound clockwise-outward. default +1.
   void setCullSign(float s) { cullSign_ = s; }
 
+  // TD_OUTLINE crease threshold, radians: dihedrals sharper than this ink as
+  // drawn-on feature lines. default TD_OUTLINE_CREASE_DEFAULT (60 degrees,
+  // converter parity). crease flags are baked into the cached edge tables at
+  // build, so changing the angle marks every cached table stale.
+  void setOutlineCrease(float radians);
+  float outlineCrease() const { return outlineCrease_; }
+
+  // optional setup-time build of the edge tables for every kept mesh in the
+  // scene, so allocation failure is visible at init (the reserve() doctrine);
+  // otherwise tables build lazily in the prepare stage of the first OUTLINE
+  // frame. tables are renderer-owned and cached per mesh.
+  bool prebuildOutline(const TD_Scene &scene);
+
+  // drops the cached edge table for `mesh` (nullptr: all of them). call when
+  // a mesh's topology changes or the mesh is freed — the cache key (pointer +
+  // counts checksum) catches free-then-realloc reuse cheaply, but an
+  // identical-shape rebuild at the same address wants an explicit invalidate.
+  void invalidateOutline(const TD_Mesh *mesh = nullptr);
+
   // pre-size the working buffers in setup() so allocation failures surface at
-  // init, not mid-run. sizing: 12 B/vertex + 16 B/face + ~104 B/object on
+  // init, not mid-run. sizing: 12 B/vertex + 17 B/face + ~108 B/object on
   // 32-bit MCUs (sizeof(ObjFrame): two 3x3 matrices, a translation, and
   // per-object attributes), summed over the largest scene.
   bool reserve(uint32_t maxVerts, uint32_t maxFaces, uint16_t maxObjects);
@@ -97,6 +118,8 @@ class TD_Renderer {
     TD_Vec3 T;            // view rotation * (object position - eye)
     float scale;          // for scaling the decal depth bias
     uint32_t vertBase;    // this object's offset into the shared vertex buffers
+    uint32_t faceBase;    // this object's offset into the per-face buffers
+                          //   (OUTLINE's neighbor-facing lookups need it)
     uint16_t baseColor, objectIdx;
     uint8_t material;     // whole-object TD_Material override
   };
@@ -108,9 +131,19 @@ class TD_Renderer {
   uint32_t capV_ = 0;
   float *faceZ_ = nullptr;   // per-face mean depth (sentinel on near-skip)
   DrawRec *rec_ = nullptr;
+  uint8_t *faceFront_ = nullptr;  // per-face facing bits; written only under
+                                  //   TD_OUTLINE (silhouette classification)
   uint32_t capF_ = 0;
   ObjFrame *objs_ = nullptr;
   uint16_t capObj_ = 0;
+
+  // TD_OUTLINE edge-table cache: one entry per distinct mesh, keyed on the
+  // mesh pointer plus a (nverts, nfaces, faceVertCount) checksum. built in
+  // the prepare stage (or prebuildOutline), freed by releaseBuffers() /
+  // invalidateOutline().
+  TD_OutlineCacheEntry *outlineCache_ = nullptr;
+  uint16_t outlineCount_ = 0, outlineCap_ = 0;
+  float outlineCrease_ = TD_OUTLINE_CREASE_DEFAULT;
 
   uint8_t mode_ = TD_SHADED;
   uint8_t celBands_ = 4;
@@ -149,6 +182,13 @@ class TD_Renderer {
   void drawLineShade(TD_RenderTarget &t, float x0, float y0, float x1, float y1, float shade);
   void outlineLoop(TD_RenderTarget &t, const ObjFrame &of, uint16_t loopStart,
                    uint16_t loopCount, float shade);
+
+  // TD_OUTLINE internals: cache lookup/build, and the classified ink pass —
+  // one face's loop edges drawn at 2.0 iff boundary, crease, or silhouette
+  // (the neighbor across the edge is not known front-facing).
+  bool ensureEdgeTable(const TD_Mesh &mesh);
+  const TD_EdgeTable *findEdgeTable(const TD_Mesh &mesh) const;
+  void outlineClassifiedLoop(TD_RenderTarget &t, const ObjFrame &of, uint16_t face);
 };
 
 // the pure cel quantizers, standalone like td_ditherOn: the renderer calls

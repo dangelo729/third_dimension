@@ -52,6 +52,15 @@ class TD_Scene {
   void setCelInk(TD_CelInk ink) { renderer_.setCelInk(ink); }  // TD_CEL ink; default black
   TD_CelInk celInk() const { return renderer_.celInk(); }
 
+  // TD_OUTLINE crease threshold, radians (default TD_OUTLINE_CREASE_DEFAULT,
+  // 60 degrees — converter parity); changing it marks the cached edge tables
+  // stale. prebuildOutline() builds the tables for this scene's meshes at
+  // setup, where an allocation failure is visible (the reserve() doctrine);
+  // otherwise they build lazily on the first TD_OUTLINE frame.
+  void setOutlineCrease(float radians) { renderer_.setOutlineCrease(radians); }
+  float outlineCrease() const { return renderer_.outlineCrease(); }
+  bool prebuildOutline() { return renderer_.prebuildOutline(*this); }
+
   // render exactly one frame into the target (beginFrame..endFrame bracketed).
   // returns false on failure — reason in lastStatus() — with the target
   // completely untouched (validation, buffer growth, and camera resolution all

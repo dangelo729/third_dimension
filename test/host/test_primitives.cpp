@@ -174,16 +174,19 @@ void runPrimitiveTests() {
   // default-parameter instances (every default fits the unit cube).
   TD_BoxMesh box;
   TD_SphereMesh sphere;
+  TD_EllipsoidMesh ellipsoid;
   TD_CylinderMesh cylinder;
   TD_ConeMesh cone;
   TD_PrismMesh prism;
   TD_TorusMesh torus;
   TD_PlaneMesh plane;
-  const TD_Mesh *defaults[7] = {&box, &sphere, &cylinder, &cone, &prism, &torus, &plane};
-  static const char *const NAMES[7] = {"box",   "sphere", "cylinder", "cone",
-                                       "prism", "torus",  "plane"};
+  const TD_Mesh *defaults[8] = {&box,  &sphere, &ellipsoid, &cylinder,
+                                &cone, &prism,  &torus,     &plane};
+  static const char *const NAMES[8] = {"box",  "sphere", "ellipsoid", "cylinder",
+                                       "cone", "prism",  "torus",     "plane"};
   CHECK(box.valid(), "box: default construction failed");
   CHECK(sphere.valid(), "sphere: default construction failed");
+  CHECK(ellipsoid.valid(), "ellipsoid: default construction failed");
   CHECK(cylinder.valid(), "cylinder: default construction failed");
   CHECK(cone.valid(), "cone: default construction failed");
   CHECK(prism.valid(), "prism: default construction failed");
@@ -192,6 +195,7 @@ void runPrimitiveTests() {
 
   // ---- P1. count formulas, swept over tessellation parameters ----
   // box 8/12/6/24 · uvSphere(S,T) S(T-1)+2 / 2S(T-1) / ST / S(4T-2)
+  // (ellipsoid shares the sphere's topology and formulas exactly)
   // cylinder,prism(N) 2N / 4N-4 / N+2 / 6N · cone(N) N+1 / 2N-2 / N+1 / 4N
   // torus(U,V) UV / 2UV / UV / 4UV · plane(C,R) (C+1)(R+1) / 2CR / CR / 4CR
   {
@@ -205,6 +209,9 @@ void runPrimitiveTests() {
         char nm[48];
         std::snprintf(nm, sizeof(nm), "sphere(%ld,%ld)", S, T);
         checkCounts(nm, m, S * (T - 1) + 2, 2 * S * (T - 1), S * T, S * (4 * T - 2));
+        TD_EllipsoidMesh e((uint16_t)S, (uint16_t)T);
+        std::snprintf(nm, sizeof(nm), "ellipsoid(%ld,%ld)", S, T);
+        checkCounts(nm, e, S * (T - 1) + 2, 2 * S * (T - 1), S * T, S * (4 * T - 2));
       }
     static const int SIDES[5] = {3, 4, 8, 16, 64};
     for (int i = 0; i < 5; ++i) {
@@ -241,7 +248,7 @@ void runPrimitiveTests() {
   }
 
   // ---- P2. index bounds, structural partition, bound radius ----
-  for (int i = 0; i < 7; ++i) {
+  for (int i = 0; i < 8; ++i) {
     const TD_Mesh &m = *defaults[i];
     checkStructure(NAMES[i], m);
     float maxLen = 0.0f;
@@ -260,13 +267,13 @@ void runPrimitiveTests() {
   }
 
   // ---- P3. polygon loops consistent with their fan triangles ----
-  for (int i = 0; i < 7; ++i) checkLoopFan(NAMES[i], *defaults[i]);
+  for (int i = 0; i < 8; ++i) checkLoopFan(NAMES[i], *defaults[i]);
 
   // ---- P4. winding: positive signed volume, exact where analytic ----
   // box w*h*d; cylinder 0.5*N*r^2*sin(2pi/N)*h (the N-gon prism it actually
   // is); cone exactly a third of that pyramid-wise.
   {
-    for (int i = 0; i < 7; ++i)
+    for (int i = 0; i < 8; ++i)
       if (defaults[i] != &plane)
         CHECK(signedVolume(*defaults[i]) > 1e-4,
               "%s: signed volume %.6f not positive (winding broke)", NAMES[i],
@@ -284,10 +291,18 @@ void runPrimitiveTests() {
     TD_ConeMesh vcone((uint16_t)N, (float)hgt, (float)r);
     CHECK(std::fabs(signedVolume(vcone) - vcylExpect / 3.0) <= 1e-4,
           "cone(8,0.8,0.4): volume %.6f != %.6f", signedVolume(vcone), vcylExpect / 3.0);
+    // ellipsoid: a componentwise scaling of the sphere's tessellation, so
+    // its discrete volume is the sphere's times (rx*ry*rz)/r^3 exactly.
+    TD_SphereMesh vsph(12, 6, 0.5f);
+    TD_EllipsoidMesh vell(12, 6, 0.4f, 0.2f, 0.3f);
+    const double vellExpect = signedVolume(vsph) * (0.4 * 0.2 * 0.3) / (0.5 * 0.5 * 0.5);
+    CHECK(std::fabs(signedVolume(vell) - vellExpect) <= 1e-4,
+          "ellipsoid(12,6,0.4,0.2,0.3): volume %.6f != %.6f", signedVolume(vell),
+          vellExpect);
   }
 
   // ---- P5. closed meshes are directed-edge manifolds ----
-  for (int i = 0; i < 7; ++i) {
+  for (int i = 0; i < 8; ++i) {
     if (defaults[i] == &plane) continue;  // open by design
     long dupes = 0, boundary = 0;
     edgeScan(*defaults[i], dupes, boundary);
@@ -297,7 +312,7 @@ void runPrimitiveTests() {
 
   // ---- P6. corner normals: unit length, analytic spot checks ----
   {
-    for (int i = 0; i < 7; ++i) {
+    for (int i = 0; i < 8; ++i) {
       const TD_Mesh &m = *defaults[i];
       long bad = 0;
       for (int c = 0; c < 3 * m.ntris; ++c)
@@ -315,6 +330,40 @@ void runPrimitiveTests() {
           if (len < 1e-6f || vdot3(n, v) / len < 0.9999f) ++bad;
         }
       CHECK(bad == 0, "sphere: %ld corners off the radial normal", bad);
+    }
+    // ellipsoid: n parallel to the implicit-surface gradient (x/rx^2,
+    // y/ry^2, z/rz^2) at every corner — checked on the default AND on a
+    // tri-axial instance, because the default's rx == rz would hide an
+    // x/z transposition in the gradient coefficients — and measurably NOT
+    // radial somewhere, which is what the classic scaled-sphere-normal bug
+    // would produce. (a transposition of the vertex scaling itself is
+    // invisible to this check, which recomputes the same formula from the
+    // same vertices; the per-axis extents in P12 pin that side.)
+    {
+      TD_EllipsoidMesh triax(12, 8, 0.4f, 0.2f, 0.3f);
+      const TD_Mesh *ells[2] = {&ellipsoid, &triax};
+      static const float SEMI[2][3] = {{0.5f, 0.25f, 0.5f}, {0.4f, 0.2f, 0.3f}};
+      long offRadial = 0;
+      for (int e = 0; e < 2; ++e) {
+        const TD_Mesh &m = *ells[e];
+        const float invSq[3] = {1.0f / (SEMI[e][0] * SEMI[e][0]),
+                                1.0f / (SEMI[e][1] * SEMI[e][1]),
+                                1.0f / (SEMI[e][2] * SEMI[e][2])};
+        long bad = 0;
+        for (int t = 0; t < m.ntris; ++t)
+          for (int k = 0; k < 3; ++k) {
+            const float *v = m.verts[m.tris[t][k]];
+            const float *n = m.cnorms[3 * t + k];
+            float g[3] = {v[0] * invSq[0], v[1] * invSq[1], v[2] * invSq[2]};
+            float glen = vlen3(g);
+            if (glen < 1e-6f || vdot3(n, g) / glen < 0.9999f) ++bad;
+            float plen = vlen3(v);
+            if (plen > 1e-6f && vdot3(n, v) / plen < 0.995f) ++offRadial;
+          }
+        CHECK(bad == 0, "ellipsoid[%d]: %ld corners off the gradient normal", e, bad);
+      }
+      CHECK(offRadial > 0,
+            "ellipsoid: every normal is radial (scaled-sphere-normal bug)");
     }
     // box: every corner normal is a unit coordinate axis (hard creases)
     {
@@ -437,16 +486,17 @@ void runPrimitiveTests() {
   // u16 tables, and boundRadius; a mismatch means a generator's emitted
   // geometry changed.
   {
-    static const uint64_t GOLDEN_MESH[7] = {
+    static const uint64_t GOLDEN_MESH[8] = {
         0x03210d47e90799c4ULL,  // box
         0xfceafa53029afc98ULL,  // sphere
+        0xb029a435495ed6f0ULL,  // ellipsoid
         0xf59b51feec9ad5b1ULL,  // cylinder
         0x88614f65c49008aaULL,  // cone
         0x3d951575b88958c9ULL,  // prism
         0x3e8299ef21be3b43ULL,  // torus
         0xb094c18450301707ULL,  // plane
     };
-    for (int i = 0; i < 7; ++i) {
+    for (int i = 0; i < 8; ++i) {
       uint64_t h = meshGoldenHash(*defaults[i]);
       CHECK(h == GOLDEN_MESH[i], "%s: mesh hash 0x%llxULL != pinned 0x%llxULL", NAMES[i],
             (unsigned long long)h, (unsigned long long)GOLDEN_MESH[i]);
@@ -454,7 +504,7 @@ void runPrimitiveTests() {
   }
 
   // ---- P9. render smoke: every primitive draws through the renderer ----
-  for (int i = 0; i < 7; ++i) {
+  for (int i = 0; i < 8; ++i) {
     TD_Scene scene;
     TD_Object obj(*defaults[i]);
     scene.add(obj);
@@ -478,6 +528,9 @@ void runPrimitiveTests() {
     TD_SphereMesh sMin(0, 0);
     CHECK(sMin.valid(), "sphere(0,0): tessellation must clamp, not fail");
     checkCounts("sphere(0,0)->(3,2)", sMin, 5, 6, 6, 18);
+    TD_EllipsoidMesh eMin(0, 0);
+    CHECK(eMin.valid(), "ellipsoid(0,0): tessellation must clamp, not fail");
+    checkCounts("ellipsoid(0,0)->(3,2)", eMin, 5, 6, 6, 18);
     TD_CylinderMesh cMin(1);
     CHECK(cMin.valid(), "cylinder(1): sides must clamp to 3");
     checkCounts("cylinder(1)->(3)", cMin, 6, 8, 5, 18);
@@ -496,6 +549,10 @@ void runPrimitiveTests() {
           "invalid box must have zero counts");
     TD_SphereMesh badSphere(16, 8, -0.5f);
     CHECK(!badSphere.valid(), "sphere(radius -0.5) must be invalid");
+    TD_EllipsoidMesh badEll(16, 8, 0.5f, -0.25f, 0.5f);
+    CHECK(!badEll.valid(), "ellipsoid(ry -0.25) must be invalid");
+    TD_EllipsoidMesh badEllZ(16, 8, 0.5f, 0.25f, 0.0f);
+    CHECK(!badEllZ.valid(), "ellipsoid(rz 0) must be invalid");
     TD_ConeMesh badCone(16, -1.0f);
     CHECK(!badCone.valid(), "cone(height -1) must be invalid");
     TD_TorusMesh badTorus(16, 8, 0.4f, 0.3f);
@@ -507,6 +564,10 @@ void runPrimitiveTests() {
     TD_TorusMesh huge(256, 256);
     CHECK(!huge.valid(), "torus(256,256) must fail the u16 index cap");
     CHECK(huge.nverts == 0 && huge.ntris == 0, "overflowed torus must be empty");
+    // ellipsoid(256,257): 256*256 + 2 = 65538 verts — past the cap
+    TD_EllipsoidMesh eHuge(256, 257);
+    CHECK(!eHuge.valid(), "ellipsoid(256,257) must fail the u16 index cap");
+    CHECK(eHuge.nverts == 0 && eHuge.ntris == 0, "overflowed ellipsoid must be empty");
 
     // rendering an invalid mesh is a safe no-op even without checking valid()
     TD_Scene scene;
@@ -556,6 +617,63 @@ void runPrimitiveTests() {
       scene.render(target);
       CHECK(stats().count == 0, "plane: must be back-face culled from below (%ld px)",
             stats().count);
+    }
+  }
+
+  // ---- P12. ellipsoid semantics: sphere degeneracy, semi-axis bounds ----
+  {
+    // rx = ry = rz reproduces the sphere's vertices exactly (identical
+    // expression shapes under -ffp-contract=off) and its radial normals to
+    // within float noise.
+    TD_SphereMesh s(16, 8, 0.5f);
+    TD_EllipsoidMesh e(16, 8, 0.5f, 0.5f, 0.5f);
+    CHECK(e.valid() && s.valid() && e.nverts == s.nverts && e.ntris == s.ntris,
+          "ellipsoid(r,r,r): structure differs from sphere");
+    float maxV = 0.0f;
+    for (int v = 0; v < s.nverts; ++v)
+      for (int k = 0; k < 3; ++k)
+        maxV = std::max(maxV, std::fabs(e.verts[v][k] - s.verts[v][k]));
+    CHECK(maxV <= 1e-6f, "ellipsoid(r,r,r): vertices off the sphere's by %.3g",
+          (double)maxV);
+    float minDot = 1.0f;
+    for (int c = 0; c < 3 * s.ntris; ++c)
+      minDot = std::min(minDot, vdot3(e.cnorms[c], s.cnorms[c]));
+    CHECK(minDot >= 0.9999f, "ellipsoid(r,r,r): normals off the sphere's (dot %.6f)",
+          (double)minDot);
+
+    // boundRadius = max semi-axis for every dominant axis. containment holds
+    // at any tessellation; tightness against a vertex is sampling-dependent
+    // and holds HERE because the poles cover Y at any tessellation and
+    // stacks = 8 is even with slices = 16 a multiple of 4, so the equator
+    // ring samples azimuth 0 (attaining rx) and pi/2 (attaining rz). with
+    // slices not a multiple of 4 a Z-dominant bound is correct but loose.
+    // the per-axis extents pin each semi-axis to its named coordinate axis —
+    // an rx<->rz transposition of the vertex scaling shifts the extents even
+    // though |v| maxima, volume, and boundRadius are all blind to it.
+    static const float AX[3][3] = {
+        {0.5f, 0.3f, 0.2f}, {0.2f, 0.5f, 0.3f}, {0.2f, 0.3f, 0.5f}};
+    for (int i = 0; i < 3; ++i) {
+      TD_EllipsoidMesh m(16, 8, AX[i][0], AX[i][1], AX[i][2]);
+      CHECK(std::fabs(m.boundRadius - 0.5f) <= 1e-6f,
+            "ellipsoid axis-%d: boundRadius %.5f != max semi-axis 0.5", i,
+            m.boundRadius);
+      float maxLen = 0.0f;
+      float maxAbs[3] = {0.0f, 0.0f, 0.0f};
+      for (int v = 0; v < m.nverts; ++v) {
+        maxLen = std::max(maxLen, vlen3(m.verts[v]));
+        for (int k = 0; k < 3; ++k)
+          maxAbs[k] = std::max(maxAbs[k], std::fabs(m.verts[v][k]));
+      }
+      CHECK(maxLen <= m.boundRadius + 1e-4f,
+            "ellipsoid axis-%d: vertex at %.5f outside boundRadius %.5f", i, maxLen,
+            m.boundRadius);
+      CHECK(std::fabs(m.boundRadius - maxLen) <= 1e-4f,
+            "ellipsoid axis-%d: boundRadius %.5f not tight against max vertex %.5f", i,
+            m.boundRadius, maxLen);
+      for (int k = 0; k < 3; ++k)
+        CHECK(std::fabs(maxAbs[k] - AX[i][k]) <= 1e-4f,
+              "ellipsoid axis-%d: coordinate-%d extent %.5f != semi-axis %.5f", i, k,
+              maxAbs[k], AX[i][k]);
     }
   }
 

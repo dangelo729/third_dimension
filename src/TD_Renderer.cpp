@@ -3,10 +3,12 @@
 
 #include <math.h>
 #include <stdlib.h>
+#include <string.h>
 
 #include "TD_Camera.h"
 #include "TD_Config.h"
 #include "TD_Scene.h"
+#include "internal/td_edge_table.h"
 
 // the engine. one geometry pipeline serves every render target: transform ->
 // project -> per-triangle back-face cull -> one global painter sort -> Gouraud
@@ -19,6 +21,26 @@
 // light's term ((1.0f - ambient) * d * el->intensity_, summed after the key
 // light in add order) is a pinned shape too. an algebraically equivalent
 // rewrite is a behavioral change here.
+
+// one cached TD_OUTLINE edge table. the (nverts, nfaces, faceVertCount)
+// checksum beside the pointer catches free-then-realloc mesh reuse cheaply;
+// meshes that share topology arrays still get separate (identical) tables —
+// a cleverer key isn't worth its bookkeeping at 3 B per loop slot.
+struct TD_OutlineCacheEntry {
+  const TD_Mesh *mesh;
+  uint16_t nv, nf, nloop;
+  TD_EdgeTable table;
+};
+
+// facing bits (faceFront_), meaningful only while drawing a TD_OUTLINE frame.
+// UNKNOWN covers faces the record loop never classified (near-skipped, or a
+// decal's slot): the neighbor isn't drawn, so an edge against it inks as the
+// boundary of drawn geometry.
+enum : uint8_t {
+  TD_FACING_BACK = 0,
+  TD_FACING_FRONT = 1,
+  TD_FACING_UNKNOWN = 2,
+};
 
 TD_Renderer::TD_Renderer() {
   // all members carry in-class defaults; working buffers stay null until the
@@ -34,7 +56,7 @@ TD_Renderer::~TD_Renderer() {
 bool TD_Renderer::reserve(uint32_t maxVerts, uint32_t maxFaces, uint16_t maxObjects) {
   // setup-time pre-allocation so failure is visible at init instead of
   // mid-run: delegates to the same exact-fit grower the render path uses.
-  // sizing: 12 B/vertex + 16 B/face + ~104 B/object over the largest scene.
+  // sizing: 12 B/vertex + 17 B/face + ~108 B/object over the largest scene.
   return ensureCapacity(maxVerts, maxFaces, maxObjects);
 }
 
@@ -50,10 +72,16 @@ void TD_Renderer::releaseBuffers() {
   faceZ_ = nullptr;
   free(rec_);
   rec_ = nullptr;
+  free(faceFront_);
+  faceFront_ = nullptr;
   capF_ = 0;
   free(objs_);
   objs_ = nullptr;
   capObj_ = 0;
+  invalidateOutline(nullptr);
+  free(outlineCache_);
+  outlineCache_ = nullptr;
+  outlineCap_ = 0;
 }
 
 bool TD_Renderer::ensureCapacity(uint32_t nv, uint32_t nf, uint16_t nobj) {
@@ -82,10 +110,18 @@ bool TD_Renderer::ensureCapacity(uint32_t nv, uint32_t nf, uint16_t nobj) {
       free(pz);
       return false;
     }
+    uint8_t *pf = (uint8_t *)malloc((size_t)nf);
+    if (!pf) {
+      free(pz);
+      free(pr);
+      return false;
+    }
     free(faceZ_);
     faceZ_ = pz;
     free(rec_);
     rec_ = pr;
+    free(faceFront_);
+    faceFront_ = pf;
     capF_ = nf;
   }
   if (nobj > capObj_) {
@@ -104,6 +140,92 @@ bool TD_Renderer::ensureCapacity(uint32_t nv, uint32_t nf, uint16_t nobj) {
 static inline bool tdKeepObject(const TD_Object &o) {
   const TD_Mesh &m = o.mesh();
   return o.visible() && m.nverts != 0 && m.ntris != 0 && m.nfaces != 0;
+}
+
+// ---- TD_OUTLINE edge-table cache -------------------------------------------
+
+void TD_Renderer::setOutlineCrease(float radians) {
+  // crease flags are baked into the tables at build, so a changed angle
+  // makes every cached table stale; an equal set is a no-op.
+  if (radians == outlineCrease_) return;
+  outlineCrease_ = radians;
+  invalidateOutline(nullptr);
+}
+
+void TD_Renderer::invalidateOutline(const TD_Mesh *mesh) {
+  if (mesh == nullptr) {
+    for (uint16_t i = 0; i < outlineCount_; ++i) outlineCache_[i].table.release();
+    outlineCount_ = 0;
+    return;
+  }
+  for (uint16_t i = 0; i < outlineCount_; ++i) {
+    if (outlineCache_[i].mesh == mesh) {
+      outlineCache_[i].table.release();
+      outlineCache_[i] = outlineCache_[outlineCount_ - 1];
+      --outlineCount_;
+      return;
+    }
+  }
+}
+
+const TD_EdgeTable *TD_Renderer::findEdgeTable(const TD_Mesh &mesh) const {
+  // linear scan: scenes hold a handful of distinct meshes, and the draw loop
+  // memoizes per record run.
+  for (uint16_t i = 0; i < outlineCount_; ++i) {
+    const TD_OutlineCacheEntry &e = outlineCache_[i];
+    if (e.mesh == &mesh && e.nv == mesh.nverts && e.nf == mesh.nfaces &&
+        e.nloop == mesh.faceVertCount)
+      return &e.table;
+  }
+  return nullptr;
+}
+
+bool TD_Renderer::ensureEdgeTable(const TD_Mesh &mesh) {
+  for (uint16_t i = 0; i < outlineCount_; ++i) {
+    TD_OutlineCacheEntry &e = outlineCache_[i];
+    if (e.mesh != &mesh) continue;
+    if (e.nv == mesh.nverts && e.nf == mesh.nfaces && e.nloop == mesh.faceVertCount)
+      return true;
+    // same address, different counts: the storage was reused for another
+    // mesh — rebuild in place. a failed build drops the entry so the cache
+    // never carries a stale table.
+    e.table.release();
+    if (!e.table.build(mesh, outlineCrease_)) {
+      outlineCache_[i] = outlineCache_[outlineCount_ - 1];
+      --outlineCount_;
+      return false;
+    }
+    e.nv = mesh.nverts;
+    e.nf = mesh.nfaces;
+    e.nloop = mesh.faceVertCount;
+    return true;
+  }
+  if (outlineCount_ == outlineCap_) {
+    // exact-fit growth, one entry at a time: new distinct meshes are rare.
+    uint16_t cap = (uint16_t)(outlineCap_ + 1);
+    TD_OutlineCacheEntry *p =
+        (TD_OutlineCacheEntry *)realloc(outlineCache_, (size_t)cap * sizeof(TD_OutlineCacheEntry));
+    if (!p) return false;
+    outlineCache_ = p;
+    outlineCap_ = cap;
+  }
+  TD_OutlineCacheEntry &e = outlineCache_[outlineCount_];
+  e.mesh = &mesh;
+  e.nv = mesh.nverts;
+  e.nf = mesh.nfaces;
+  e.nloop = mesh.faceVertCount;
+  e.table = TD_EdgeTable{};
+  if (!e.table.build(mesh, outlineCrease_)) return false;
+  ++outlineCount_;
+  return true;
+}
+
+bool TD_Renderer::prebuildOutline(const TD_Scene &scene) {
+  for (const TD_Object *o = scene.firstObject(); o; o = o->next_) {
+    if (!tdKeepObject(*o)) continue;
+    if (!ensureEdgeTable(o->mesh())) return false;
+  }
+  return true;
 }
 
 bool TD_Renderer::render(const TD_Scene &scene, TD_Camera &camera, TD_RenderTarget &target) {
@@ -159,6 +281,19 @@ bool TD_Renderer::prepare(const TD_Scene &scene, TD_Camera &camera, TD_RenderTar
   if (nObj > 0xFFFFu || !ensureCapacity(totalV, totalF, (uint16_t)nObj)) {
     status_ = TD_ERR_ALLOC;
     return false;
+  }
+
+  // TD_OUTLINE edge tables for every kept mesh, still before any pixel: a
+  // failed build aborts with the target untouched, exactly like the working
+  // buffers (allocate-before-any-pixel contract). cached tables are free.
+  if (mode_ == TD_OUTLINE) {
+    for (const TD_Object *o = scene.firstObject(); o; o = o->next_) {
+      if (!tdKeepObject(*o)) continue;
+      if (!ensureEdgeTable(o->mesh())) {
+        status_ = TD_ERR_ALLOC;
+        return false;
+      }
+    }
   }
 
   // scene bound sphere for camera auto-fit: AABB center of the per-object
@@ -219,6 +354,7 @@ void TD_Renderer::drawFrame(const TD_Scene &scene, const TD_Camera &camera,
     of.mesh = &msh;
     of.scale = o->scale();
     of.vertBase = vertBase;
+    of.faceBase = faceBase;
     of.baseColor = o->color();
     of.objectIdx = nKept;
     of.material = (uint8_t)o->material();
@@ -285,6 +421,14 @@ void TD_Renderer::drawFrame(const TD_Scene &scene, const TD_Camera &camera,
   // disagree, and the face draws if any of them fronts. decal faces join the
   // second draw group, keyed by their own depth pulled nearer per layer; the
   // bias is model-units by intent, so it scales with the object.
+  //
+  // under TD_OUTLINE only, the per-face facing result is also recorded (for
+  // the ink pass's silhouette test) and decal faces are skipped whole —
+  // their loop edges are unshared and would ink as permanent boundary
+  // rectangles. other modes take no memset and no stores: the disabled path
+  // stays byte-identical.
+  const bool outlineMode = mode_ == TD_OUTLINE;
+  if (outlineMode) memset(faceFront_, TD_FACING_UNKNOWN, (size_t)faceBase);
   uint32_t nRec = 0;
   uint32_t fBase = 0;
   for (uint16_t oi = 0; oi < nKept; ++oi) {
@@ -293,7 +437,8 @@ void TD_Renderer::drawFrame(const TD_Scene &scene, const TD_Camera &camera,
     const uint32_t vb = of.vertBase;
     for (uint16_t f = 0; f < msh.nfaces; ++f) {
       float fz = faceZ_[fBase + f];
-      if (fz <= -1e29f) continue;  // near-skip sentinel
+      if (fz <= -1e29f) continue;  // near-skip sentinel (facing stays UNKNOWN)
+      if (outlineMode && msh.fattr && msh.fattr[f].host != TD_NO_HOST) continue;
       uint16_t triStart = msh.faces[f][0], triCount = msh.faces[f][1];
       bool anyFront = false;
       for (uint16_t t = triStart; t < triStart + triCount && !anyFront; ++t) {
@@ -303,6 +448,8 @@ void TD_Renderer::drawFrame(const TD_Scene &scene, const TD_Camera &camera,
             (sx_[vb + b] - ax) * (sy_[vb + c] - ay) - (sy_[vb + b] - ay) * (sx_[vb + c] - ax);
         anyFront = cullSign_ * cross > 0.0f;
       }
+      if (outlineMode)
+        faceFront_[fBase + f] = anyFront ? TD_FACING_FRONT : TD_FACING_BACK;
       if (!anyFront) continue;
 
       float zkey = fz;
@@ -354,6 +501,37 @@ void TD_Renderer::drawFrame(const TD_Scene &scene, const TD_Camera &camera,
     uint8_t mat = of.material != TD_MATERIAL_LIT
                       ? of.material
                       : (msh.fattr ? msh.fattr[r.face].mat : (uint8_t)TD_MATERIAL_LIT);
+
+    if (outlineMode) {
+      // hidden-line pass: fill the face at the background shade so the
+      // painter erases hidden lines for free, then ink its classified
+      // feature edges at 2.0. WHITE faces fill at 2.0 instead (a face's
+      // opt-in to solid white — the eyeball case), keeping WHITE's
+      // unconditionally-lit contract; everything else fills at 0.0.
+      celSpanOn_ = false;
+      const bool whiteFill = mat == TD_MATERIAL_WHITE;
+      TD_MaterialCtx ctx;
+      ctx.mat = whiteFill ? (uint8_t)TD_MATERIAL_WHITE : (uint8_t)TD_MATERIAL_BLACK;
+      ctx.mode = mode_;
+      ctx.baseColor = of.baseColor;
+      ctx.objectIdx = r.obj;
+      ctx.faceIdx = r.face;
+      target.setMaterial(ctx);
+      const float fillShade = whiteFill ? 2.0f : 0.0f;
+      for (uint16_t t = triStart; t < triStart + triCount; ++t) {
+        // every fan triangle fills — the per-triangle re-cull is skipped so
+        // a non-planar face leaves no coverage holes for hidden lines to
+        // show through.
+        uint16_t a = msh.tris[t][0], b = msh.tris[t][1], c = msh.tris[t][2];
+        fillTri(target, sx_[vb + a], sy_[vb + a], fillShade, sx_[vb + b], sy_[vb + b],
+                fillShade, sx_[vb + c], sy_[vb + c], fillShade);
+      }
+      ctx.mat = TD_MATERIAL_WHITE;
+      target.setMaterial(ctx);
+      outlineClassifiedLoop(target, of, r.face);
+      continue;
+    }
+
     // quantization is scoped to LIT fills: BLACK/WHITE sentinel shades flow
     // through the untouched span path.
     celSpanOn_ = celFrameOn_ && mat == TD_MATERIAL_LIT;
@@ -669,5 +847,33 @@ void TD_Renderer::outlineLoop(TD_RenderTarget &t, const ObjFrame &of, uint16_t l
     uint32_t i = vb + msh.faceVerts[loopStart + k];
     uint32_t j = vb + msh.faceVerts[loopStart + (uint16_t)((k + 1) % loopCount)];
     drawLineShade(t, sx_[i], sy_[i], sx_[j], sy_[j], shade);
+  }
+}
+
+// TD_OUTLINE's ink pass for one front face: each loop edge draws at 2.0 iff
+// it is a boundary edge, a crease edge (baked flags), or a silhouette edge —
+// the face across it is not known front-facing this frame (a back neighbor,
+// or UNKNOWN for a near-skipped one, which isn't drawn and so makes this
+// edge the boundary of drawn geometry). a crease between two front faces
+// draws once per face — idempotent at 2.0, and the nearer re-ink is
+// protective under the painter; both-back and hidden crease edges are never
+// visited because back faces never reach the draw loop.
+void TD_Renderer::outlineClassifiedLoop(TD_RenderTarget &t, const ObjFrame &of, uint16_t face) {
+  const TD_Mesh &msh = *of.mesh;
+  const TD_EdgeTable *tab = findEdgeTable(msh);
+  if (!tab || tab->nloop != msh.faceVertCount) return;  // prepare builds these
+  const uint32_t vb = of.vertBase;
+  const uint16_t loopStart = msh.faces[face][2], loopCount = msh.faces[face][3];
+  for (uint16_t k = 0; k < loopCount; ++k) {
+    const uint16_t slot = (uint16_t)(loopStart + k);
+    bool ink = tab->flags[slot] != 0;  // crease or boundary
+    if (!ink) {
+      const uint16_t opp = tab->opp[slot];
+      ink = opp == TD_EDGE_NONE || faceFront_[of.faceBase + opp] != TD_FACING_FRONT;
+    }
+    if (!ink) continue;
+    uint32_t i = vb + msh.faceVerts[slot];
+    uint32_t j = vb + msh.faceVerts[loopStart + (uint16_t)((k + 1) % loopCount)];
+    drawLineShade(t, sx_[i], sy_[i], sx_[j], sy_[j], 2.0f);
   }
 }

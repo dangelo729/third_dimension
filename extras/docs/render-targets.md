@@ -58,11 +58,12 @@ Optional hooks:
 - `setMaterial(const TD_MaterialCtx &ctx)` — called after the painter sort
   before a face's draw groups: once for the fill, then re-latched to BLACK
   before a SOLID outline pass (cel ink re-latches to BLACK or WHITE per its
-  ink style). `ctx` carries the face's `TD_Material`, the render mode
-  (`ctx.mode`, informational — it now carries `TD_CEL` = 3 too), the owning
-  object's RGB565 `baseColor`, and object/face indices. Latch what you need;
-  mono-style targets can ignore it (materials reach them through shade
-  encoding).
+  ink style; OUTLINE latches BLACK — or WHITE for a WHITE face — for the
+  fill, then re-latches WHITE for the ink). `ctx` carries the face's
+  `TD_Material`, the render mode (`ctx.mode`, informational — it may carry
+  `TD_CEL` = 3 or `TD_OUTLINE` = 4 too), the owning object's RGB565
+  `baseColor`, and object/face indices. Latch what you need; mono-style
+  targets can ignore it (materials reach them through shade encoding).
 - `endFrame()` — for deferred output (the mono target's error-diffusion
   methods quantize their recorded frame here).
 
@@ -79,13 +80,16 @@ Renderer guarantees to the target:
 - **G2 (coverage).** Every pixel covered by a front face is plotted,
   including fully dark ones. Painter overwrite — a near face covering a
   far one — depends on dark pixels being delivered.
-- **G3 (endpoint shades).** BLACK-material faces, SOLID-mode outlines, and
-  TD_CEL black ink arrive as exactly `0.0`; WHITE faces, SOLID fills,
-  WIREFRAME lines, and TD_CEL white ink as `2.0` (saturated past every
-  threshold); LIT Gouraud shades are clamped to `[ambient, 1.0]`, and TD_CEL
-  band levels arrive within that range as exact slope-0 spans. The
-  `[ambient, 1.0]` range assumes nonnegative light intensities; a negative
-  intensity can push LIT shades below ambient — targets must tolerate that.
+- **G3 (endpoint shades).** BLACK-material faces, SOLID-mode outlines,
+  TD_CEL black ink, and TD_OUTLINE hidden-line fills arrive as exactly
+  `0.0`; WHITE faces, SOLID fills, WIREFRAME lines, TD_CEL white ink,
+  TD_OUTLINE feature-line ink, and TD_OUTLINE fills of WHITE faces as `2.0`
+  (saturated past every threshold); LIT Gouraud shades are clamped to
+  `[ambient, 1.0]`, and TD_CEL band levels arrive within that range as
+  exact slope-0 spans. Under TD_OUTLINE nothing but the two endpoints ever
+  crosses the seam. The `[ambient, 1.0]` range assumes nonnegative light
+  intensities; a negative intensity can push LIT shades below ambient —
+  targets must tolerate that.
 
 Target guarantees to the renderer:
 
@@ -121,9 +125,10 @@ the library never talks to hardware.
 ## Mode × target support matrix
 
 Every cell is defined, tested behavior. `baseColor` is ignored by mono
-targets by definition; FLOYD/ATKINSON in SOLID/WIREFRAME modes behave as a
-bare 0.5 threshold (provably identical output, since those modes only emit
-saturated shades).
+targets by definition; FLOYD/ATKINSON in SOLID/WIREFRAME/OUTLINE modes
+behave as a bare 0.5 threshold (provably identical output, since those
+modes only emit saturated shades — the diffusion taps at ≤ 0 / ≥ 1 absorb
+error without spreading any).
 
 | mode / target | TD_MonoTarget | TD_Color565Target |
 |---|---|---|
@@ -131,8 +136,9 @@ saturated shades).
 | **TD_SOLID** | saturated fill (shade 2.0) + true-edge outlines at 0.0 | flat baseColor fill + outlines in matBlack |
 | **TD_WIREFRAME** | front-face loop edges at 2.0 (always lit) | loop edges in per-object baseColor |
 | **TD_CEL** | uniform screentone bands under the ordered methods (interiors motion-stable); under diffusion the 1.0 top band is hard-on but mid bands still crawl | N flat color steps of baseColor + ink in the exact matBlack/matWhite palette |
+| **TD_OUTLINE** | fills at exactly 0.0 (2.0 for WHITE faces), ink at exactly 2.0 — the frame is identical under every dither method (endpoints only) | fills in exact matBlack (2.0-fills in matWhite), ink in matWhite; the "background" fill matches the mono target's cleared background but is **matBlack, not `setBackground`** |
 | **materials** | BLACK never speckles; WHITE never drops pixels (dither endpoint guarantees) | BLACK/WHITE fill exact matBlack/matWhite palette colors, light ignored |
-| **decals** | draw after all body faces, layer-ordered (envelope in `limits.md`) | same |
+| **decals** | draw after all body faces, layer-ordered (envelope in `limits.md`); skipped entirely under TD_OUTLINE | same |
 
 A custom `plotShade`-only target gets TD_CEL for free and exactly: band
 levels arrive as slope-0 spans, and the default span loop delivers

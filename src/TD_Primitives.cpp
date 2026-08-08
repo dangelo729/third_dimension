@@ -181,6 +181,120 @@ TD_SphereMesh::~TD_SphereMesh() { TD_MeshBuilder::freeMesh(*this); }
 bool TD_SphereMesh::valid() const { return nverts > 0; }
 
 // ---------------------------------------------------------------------------
+// ellipsoid: the UV sphere stretched to semi-axes rx, ry, rz — same topology
+// (S slices, T stacks, single pole vertices) with the non-uniform scale
+// baked into the vertices. its own generator, not a scaled call into the
+// sphere's, so the sphere's pinned geometry can never move.
+// counts: identical to TD_SphereMesh — nv = S*(T-1) + 2, nt = 2*S*(T-1),
+// nf = S*T, loop entries = S*(4*T - 2).
+// normals: scaling positions does not scale normals — the analytic surface
+// normal at p is the normalized implicit-surface gradient
+// normalize(p.x/rx^2, p.y/ry^2, p.z/rz^2), which reduces to p/|p| only when
+// rx = ry = rz. poles stay exactly (0, +-1, 0).
+// boundRadius = max(rx, ry, rz): exact for the analytic surface (|p| never
+// exceeds the largest semi-axis), so every vertex lies on or inside it.
+// vertex attainment is sampling-dependent: the poles give ry at any
+// tessellation; with stacks even the equator ring gives rx (azimuth 0 is
+// always slot 0) but reaches rz only when slices is a multiple of 4 (only
+// then is azimuth pi/2 a slot).
+
+// n = normalize(p * invSq) with invSq = (1/rx^2, 1/ry^2, 1/rz^2): the
+// ellipsoid's smooth normal at a surface point p centered on the origin.
+static void ellipsoidUnit(const float p[3], const float invSq[3], float n[3]) {
+  const float x = p[0] * invSq[0], y = p[1] * invSq[1], z = p[2] * invSq[2];
+  const float inv = 1.0f / sqrtf(x * x + y * y + z * z);
+  n[0] = x * inv;
+  n[1] = y * inv;
+  n[2] = z * inv;
+}
+
+TD_EllipsoidMesh::TD_EllipsoidMesh(uint16_t slices, uint16_t stacks, float rx, float ry,
+                                   float rz) {
+  *(TD_Mesh *)this = TD_Mesh{};
+  if (rx <= 0.0f || ry <= 0.0f || rz <= 0.0f) return;
+  const uint32_t S = slices < 3 ? 3u : slices;
+  const uint32_t T = stacks < 2 ? 2u : stacks;
+  TD_MeshBuilder b;
+  if (!b.begin(S * (T - 1) + 2, 2 * S * (T - 1), S * T, S * (4 * T - 2), false)) return;
+  const float invSq[3] = {1.0f / (rx * rx), 1.0f / (ry * ry), 1.0f / (rz * rz)};
+  // north pole; rings top to bottom at increasing azimuth; south pole —
+  // the sphere's vertex order with each axis scaled by its semi-axis.
+  const uint16_t north = b.addVert(0.0f, ry, 0.0f);
+  for (uint32_t j = 1; j < T; ++j) {
+    const float phi = kPi * (float)j / (float)T;
+    const float sp = sinf(phi), cp = cosf(phi);
+    for (uint32_t i = 0; i < S; ++i) {
+      const float a = ringAngle(i, S);
+      b.addVert(rx * (sp * cosf(a)), ry * cp, rz * (sp * sinf(a)));
+    }
+  }
+  const uint16_t south = b.addVert(0.0f, -ry, 0.0f);
+  // fully smooth: every corner takes the analytic gradient normal of its own
+  // vertex, so corners sharing a vertex always agree (no crease anywhere).
+  // row 0: S triangles fanning from the north pole to ring 1.
+  for (uint32_t i = 0; i < S; ++i) {
+    const uint16_t r0 = (uint16_t)(1 + i);
+    const uint16_t r1 = (uint16_t)(1 + (i + 1) % S);
+    float n0[3], np[3], n1[3];
+    ellipsoidUnit(b.verts[r0], invSq, n0);
+    ellipsoidUnit(b.verts[north], invSq, np);
+    ellipsoidUnit(b.verts[r1], invSq, n1);
+    b.beginFace();
+    b.loopVert(r0);
+    b.loopVert(north);
+    b.loopVert(r1);
+    b.addTri(r0, north, r1, n0, np, n1);
+    b.endFace();
+  }
+  // rows 1..T-2: S quads {lower_i, upper_i, upper_i+1, lower_i+1} between
+  // ring k (upper) and ring k+1 (lower), indices mod S.
+  for (uint32_t k = 1; k + 1 < T; ++k) {
+    const uint32_t up = 1 + (k - 1) * S;
+    const uint32_t lo = up + S;
+    for (uint32_t i = 0; i < S; ++i) {
+      const uint32_t i2 = (i + 1) % S;
+      const uint16_t l0 = (uint16_t)(lo + i), u0 = (uint16_t)(up + i);
+      const uint16_t u1 = (uint16_t)(up + i2), l1 = (uint16_t)(lo + i2);
+      float nl0[3], nu0[3], nu1[3], nl1[3];
+      ellipsoidUnit(b.verts[l0], invSq, nl0);
+      ellipsoidUnit(b.verts[u0], invSq, nu0);
+      ellipsoidUnit(b.verts[u1], invSq, nu1);
+      ellipsoidUnit(b.verts[l1], invSq, nl1);
+      b.beginFace();
+      b.loopVert(l0);
+      b.loopVert(u0);
+      b.loopVert(u1);
+      b.loopVert(l1);
+      b.addTri(l0, u0, u1, nl0, nu0, nu1);
+      b.addTri(l0, u1, l1, nl0, nu1, nl1);
+      b.endFace();
+    }
+  }
+  // row T-1: S triangles closing the last ring to the south pole.
+  const uint32_t last = 1 + (T - 2) * S;
+  for (uint32_t i = 0; i < S; ++i) {
+    const uint16_t u0 = (uint16_t)(last + i);
+    const uint16_t u1 = (uint16_t)(last + (i + 1) % S);
+    float ns[3], n0[3], n1[3];
+    ellipsoidUnit(b.verts[south], invSq, ns);
+    ellipsoidUnit(b.verts[u0], invSq, n0);
+    ellipsoidUnit(b.verts[u1], invSq, n1);
+    b.beginFace();
+    b.loopVert(south);
+    b.loopVert(u0);
+    b.loopVert(u1);
+    b.addTri(south, u0, u1, ns, n0, n1);
+    b.endFace();
+  }
+  const float rmax = rx > ry ? (rx > rz ? rx : rz) : (ry > rz ? ry : rz);
+  b.finish(*this, rmax);
+}
+
+TD_EllipsoidMesh::~TD_EllipsoidMesh() { TD_MeshBuilder::freeMesh(*this); }
+
+bool TD_EllipsoidMesh::valid() const { return nverts > 0; }
+
+// ---------------------------------------------------------------------------
 // shared tube builder behind cylinder and prism: N-gon cross-section of
 // circumradius r on the +Y axis, wall from y = -h/2 to +h/2, closed by two
 // single N-gon cap loops (rim outlines carry no fan diagonals and each cap

@@ -18,7 +18,9 @@ enum TD_RenderMode : uint8_t {
   TD_SOLID = 1,           // saturated fill + black true-edge outlines
   TD_WIREFRAME = 2,       // front-facing polygon edges only
   TD_CEL = 3,             // lit fill quantized to flat bands + true-edge ink
-  TD_RENDER_MODE_COUNT = 4,
+  TD_OUTLINE = 4,         // feature lines only: silhouette / crease / boundary
+                          //   ink over background-shade hidden-line fills
+  TD_RENDER_MODE_COUNT = 5,
 };
 
 // ink style for TD_CEL's true-edge outlines. BLACK draws at exact shade 0.0

@@ -84,6 +84,7 @@ int main() {
   runCelTests();
   runPrimitiveTests();
   runLightTests();
+  runOutlineTests();
 
   if (failures == 0)
     std::printf("\nALL CHECKS PASSED\n");

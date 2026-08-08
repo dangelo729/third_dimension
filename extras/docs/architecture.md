@@ -42,9 +42,12 @@ One `scene.render(target)` call performs, in order:
    their vertex and face totals in 32-bit — a scene of u16-indexed meshes can
    exceed u16 totals. Grow the working buffers to fit, or fail with
    `TD_ERR_ALLOC` *before any pixel is touched*, leaving the target untouched.
-   Then resolve the camera's framing intent (auto-fit latch, orbit pose)
-   against the target dimensions and scene bounds into an eye point, orthonormal
-   basis, focal length, and principal point.
+   Under `TD_OUTLINE`, also build any missing edge-adjacency tables here (one
+   per distinct mesh, cached — see stage 7's ink pass), under the same
+   allocate-before-any-pixel contract; `scene.prebuildOutline()` moves that
+   into `setup()`. Then resolve the camera's framing intent (auto-fit latch,
+   orbit pose) against the target dimensions and scene bounds into an eye
+   point, orthonormal basis, focal length, and principal point.
 2. **Frame bracket.** `target.beginFrame()` — false aborts the render. Built-in
    targets auto-clear here (diffusion mono targets fill their shade field with
    the "untouched" sentinel). The renderer never clears: it writes only pixels
@@ -62,7 +65,12 @@ One `scene.render(target)` call performs, in order:
    quad's fan triangles may disagree, and the face draws if any triangle fronts.
    Survivors become draw records carrying mean loop depth. Decal faces (per-face
    attributes with a host face) join a second group, keyed slightly nearer than
-   their own depth per stacking layer.
+   their own depth per stacking layer. Under `TD_OUTLINE` only, the facing
+   result is also recorded per face (FRONT/BACK, with UNKNOWN for near-skipped
+   faces) into a per-face byte for stage 7's silhouette classification, and
+   decal faces are skipped whole (their unshared loop edges would ink as
+   permanent boundary rectangles); other modes take no memset and no stores —
+   the disabled path is byte-identical.
 6. **Painter sort.** ONE global `qsort` across all objects: group ascending
    (bodies before decals), depth descending (far first), then object index,
    then face index. The trailing tie-breaks make the frame a pure function of
@@ -76,7 +84,14 @@ One `scene.render(target)` call performs, in order:
    with the normal rotated to world space. Cel keeps corner shades
    continuous — quantization happens per span, after interpolation (stage 8). The scanline fill samples
    pixel centers and is half-open right/bottom, so adjacent triangles neither
-   crack nor double-draw.
+   crack nor double-draw. `TD_OUTLINE` takes its own two-pass branch here:
+   *fill* every fan triangle of the face (the per-triangle re-cull is skipped,
+   so non-planar faces leave no coverage holes) flat at 0.0 — 2.0 for a WHITE
+   face — so the painter erases hidden lines; then *ink* the face's classified
+   loop edges at 2.0 through the cached edge table: an edge draws iff its
+   boundary flag is set, its crease flag is set, or the face across it is not
+   known front-facing this frame (silhouette; UNKNOWN neighbors ink — they are
+   not drawn, so the edge bounds drawn geometry).
 8. **Spans.** Each scanline segment clamps to the viewport and crosses the seam
    once: `target.plotShadeSpan(y, xs, xe, leftEdgeX, leftShade, shadeSlope)`.
    Under `TD_CEL`, a LIT span is first split at band-threshold crossings into
@@ -121,8 +136,9 @@ and is listed only to complete the per-frame memory picture.
 | buffer | size | contents | owner |
 |---|---|---|---|
 | vertex block | 12 B/vertex | screen x, screen y, view z — all objects pooled at per-object offsets | renderer |
-| face block | 16 B/face | per-face mean depth + one draw record | renderer |
-| object cache | ~104 B/object | per-frame transform state (M, N, T, scale, offsets, color, material) | renderer |
+| face block | 17 B/face | per-face mean depth + one draw record + one facing byte (written only under `TD_OUTLINE`) | renderer |
+| object cache | ~108 B/object | per-frame transform state (M, N, T, scale, offsets, color, material) | renderer |
+| outline edge tables | 3 B/loop entry per distinct mesh | per-edge neighbor + crease/boundary flags, built once per mesh and cached (`TD_OUTLINE` only) | renderer |
 | diffusion field | 8 B/pixel | shade field + error accumulator, only when a diffusion dither is selected | `TD_MonoTarget` |
 
 Growth is **exact-fit, high-water**: buffers grow to the largest scene seen and

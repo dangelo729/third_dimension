@@ -227,9 +227,11 @@ void runRenderTests() {
     // the TD_CEL floor is a calibrated invariant, not a feature tune: a
     // backlit pose quantizes the whole object to the bottom band (~15% duty
     // at ambient 0.15 under BAYER8, black ink knocking out more), which
-    // legitimately grazes the shaded floor of 50.
-    CHECK(c > (m == TD_CEL ? 25 : 50), "sane config %d mode %d drew almost nothing (%ld px)",
-          k, (int)m, c);
+    // legitimately grazes the shaded floor of 50. TD_OUTLINE shares the
+    // carve-out: sparse line frames bottom out near 58 lit pixels over a
+    // dense rotation grid (silhouette + rim creases only at some poses).
+    CHECK(c > (m == TD_CEL || m == TD_OUTLINE ? 25 : 50),
+          "sane config %d mode %d drew almost nothing (%ld px)", k, (int)m, c);
   }
   CHECK(oobCount == 0, "engine plotted out of bounds %ld times (sane configs)", oobCount);
 

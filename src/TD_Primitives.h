@@ -28,8 +28,8 @@
 // scene referencing it, exactly like a flash mesh header.
 //
 // memory (single block): 12*nv + 42*nt + 8*nf + 2*nloop bytes. defaults:
-// box 696 B, sphere(16,8) 12.8 KB, torus(16,8) 14.3 KB; corner normals are
-// ~64% of every budget.
+// box 696 B, sphere/ellipsoid(16,8) 12.8 KB, torus(16,8) 14.3 KB; corner
+// normals are ~64% of every budget.
 
 class TD_BoxMesh : public TD_Mesh {
  public:
@@ -48,6 +48,24 @@ class TD_SphereMesh : public TD_Mesh {
   ~TD_SphereMesh();
   TD_SphereMesh(const TD_SphereMesh &) = delete;
   TD_SphereMesh &operator=(const TD_SphereMesh &) = delete;
+  bool valid() const;
+};
+
+// ellipsoid: UV-sphere topology stretched to independent semi-axes rx, ry,
+// rz — the non-uniform sphere, with the scale baked into the mesh so
+// TD_Object scale stays uniform (normals never renormalize in the render
+// loop). fully smooth analytic normals (the implicit-surface gradient
+// normalize(x/rx^2, y/ry^2, z/rz^2), which is NOT the scaled sphere
+// normal); poles are single vertices. rx = ry = rz reproduces
+// TD_SphereMesh(slices, stacks, r) vertex-for-vertex. memory matches the
+// sphere at equal tessellation.
+class TD_EllipsoidMesh : public TD_Mesh {
+ public:
+  explicit TD_EllipsoidMesh(uint16_t slices = 16, uint16_t stacks = 8, float rx = 0.5f,
+                            float ry = 0.25f, float rz = 0.5f);
+  ~TD_EllipsoidMesh();
+  TD_EllipsoidMesh(const TD_EllipsoidMesh &) = delete;
+  TD_EllipsoidMesh &operator=(const TD_EllipsoidMesh &) = delete;
   bool valid() const;
 };
 

@@ -6,7 +6,7 @@
 // handshake, and tuning constants. every other header includes this first.
 
 #define THIRDDIMENSION_VERSION_MAJOR 0
-#define THIRDDIMENSION_VERSION_MINOR 1
+#define THIRDDIMENSION_VERSION_MINOR 2
 #define THIRDDIMENSION_VERSION_PATCH 0
 
 // the mesh header format this library reads. generated model headers
@@ -44,5 +44,11 @@
 // dither method can distinguish (BAYER2 carries 5 levels) and bound the
 // per-span split loop.
 #define TD_CEL_MAX_BANDS 8
+
+// TD_OUTLINE default crease threshold, radians (60 degrees — the converter's
+// default smoothing angle, so drawn feature lines match shading creases).
+// changing it via setOutlineCrease invalidates the cached edge tables: the
+// crease flags are baked at table build.
+#define TD_OUTLINE_CREASE_DEFAULT 1.04719755f
 
 #endif  // TD_CONFIG_H

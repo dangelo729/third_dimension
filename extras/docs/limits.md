@@ -106,6 +106,45 @@ plus one list pointer per light:
   degradation. At ambient ≥ 1 banding disables entirely and TD_CEL renders
   flat-lit.
 
+## Outline rendering (TD_OUTLINE)
+
+- **Edge-table RAM:** 3 bytes per polygon-loop entry (`faceVertCount`) per
+  distinct mesh, built once and cached by the renderer. Worked examples:
+  box 72 B, sphere(16,8) 1 440 B, torus(16,8) 1 536 B, a 304-loop converted
+  head 912 B. Two objects sharing one mesh share one table; the transient
+  build scratch (≈ 16 B/vertex + 8 B/loop entry + 12 B/face) is freed before
+  the build returns. Tables build in the prepare stage (before any pixel;
+  a failed allocation aborts with `TD_ERR_ALLOC` and the target untouched)
+  or up front via `scene.prebuildOutline()`.
+- **Facing bits:** 1 B/face inside the renderer's face block (the 17 B/face
+  figure below) — one memset + one store per culled face per frame, only
+  while the mode is `TD_OUTLINE`.
+- **Crease flags are baked at build** against `setOutlineCrease`'s angle
+  (default 60°, the converter's smoothing default); changing the angle
+  invalidates every cached table. A mesh that deforms per frame with fixed
+  topology keeps its table (silhouette and boundary classification are
+  per-frame exact), but its crease flags describe the build-time shape —
+  rebuild via `invalidateOutline(&mesh)` when that matters.
+- **Classification is object-space and per-face.** A non-planar face's
+  any-front cull can read FRONT for *both* faces at a silhouette, so the
+  line there can drop or flicker for a frame — PicoCAD meshes are the main
+  source of such quads. Near-skipped neighbors ink deterministically (the
+  unknown face is not drawn, so the edge is the boundary of drawn
+  geometry); that edge can flicker as faces graze `setNearSkip`.
+- **Hidden-line removal inherits the painter envelope verbatim:**
+  interpenetrating objects and big-face-vs-small-object mis-sorts erase or
+  reveal exactly the lines the fills mis-sort. Intersection curves between
+  objects are not mesh edges and are never drawn.
+- **Under `TD_OUTLINE` the dither method cannot affect the frame** — only
+  the endpoint shades 0.0/2.0 cross the seam, and every method realizes
+  them identically. A sketch that only ever renders outline mode can drop
+  diffusion's 8 B/pixel buffers for free.
+- **Mesh freed mid-session:** the cache key (mesh pointer + counts) catches
+  most storage reuse, but destroying a mesh and building an identical-count
+  one at the same address wants an explicit `invalidateOutline(&mesh)`.
+  Primitives free their block in their destructors — invalidate before
+  letting one go while a renderer still holds a table for it.
+
 ## Diffusion dither buffers (TD_MonoTarget)
 
 The FLOYD/ATKINSON methods buffer the whole frame as floats: two w×h
@@ -143,15 +182,18 @@ Per frame the renderer needs, summed over the *visible* objects of the
 largest scene rendered so far:
 
 ```
-bytes ≈ 12·(total vertices) + 16·(total faces) + 104·(object count)
+bytes ≈ 12·(total vertices) + 17·(total faces) + 108·(object count)
 ```
 
 The per-object term is the per-frame transform cache: two 3×3 matrices, a
-translation, and the object attributes — 104 B with 32-bit pointers. Worked
-examples: a one-object sphere (`TD_SphereMesh(32, 24)` — 738 vertices, 768
-faces) ≈ 21 KB; a 4-object, 2 000-vertex, 1 200-face scene ≈ 43 KB. Growth
-is exact-fit high-water — buffers grow to the largest scene seen and stay,
-with no doubling slack and no per-frame realloc chatter.
+translation, and the object attributes — 108 B with 32-bit pointers; the
+17th face byte is `TD_OUTLINE`'s facing bit (allocated always, written only
+in that mode). Worked examples: a one-object sphere (`TD_SphereMesh(32,
+24)` — 738 vertices, 768 faces) ≈ 22 KB; a 4-object, 2 000-vertex,
+1 200-face scene ≈ 45 KB. Growth is exact-fit high-water — buffers grow to
+the largest scene seen and stay, with no doubling slack and no per-frame
+realloc chatter. (`TD_OUTLINE`'s cached edge tables are budgeted separately
+above.)
 
 ### reserve() / releaseBuffers()
 

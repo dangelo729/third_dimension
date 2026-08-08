@@ -13,6 +13,44 @@ releases may break API; breaks are called out under a "Breaking" heading.
 
 ### Added
 
+- **Ellipsoid primitive: `TD_EllipsoidMesh(slices, stacks, rx, ry, rz)`.** The
+  non-uniform sphere: UV-sphere topology (identical counts and memory to
+  `TD_SphereMesh` at equal tessellation) stretched to independent semi-axes, with the
+  scale baked into the mesh so `TD_Object::setScale` stays uniform and normals never
+  renormalize in the render loop. Corner normals are the exact analytic
+  implicit-surface gradient `normalize(x/rx², y/ry², z/rz²)` — not the scaled sphere
+  normal — so Gouraud highlights sit where the curvature actually puts them;
+  `rx = ry = rz` reproduces the sphere vertex-for-vertex (tested).
+  `boundRadius = max(rx, ry, rz)`, exact for the analytic surface. Default
+  `(0.5, 0.25, 0.5)` is a 2:1 squashed sphere inside the unit cube. **No existing
+  golden pins moved** — purely additive: a new generator with its own normal helper,
+  no shared expression changed (verified by running the full suite with only the new
+  pin unset). New pin: the ellipsoid entry in `GOLDEN_MESH`. `PrimitivesTour` becomes
+  an eight-shape tour.
+- **Outline (feature-line) rendering: the `TD_OUTLINE` render mode.** Draws only the
+  lines that matter — silhouette edges (view-dependent: the classifier compares each
+  edge's neighbor against the per-frame facing bits, so the lines migrate as objects
+  rotate), crease edges (dihedrals sharper than `setOutlineCrease`, default 60° for
+  converter parity), and boundary edges (open-mesh borders) — inked at exactly 2.0
+  over faces filled at exactly 0.0, so the painter's algorithm erases hidden lines for
+  free. `TD_MATERIAL_WHITE` faces fill at 2.0 instead (solid-white opt-in); decal faces
+  are skipped whole (their unshared loop edges would ink as permanent boundary
+  rectangles). Edge-adjacency tables (new internal module `td_edge_table`: position-
+  welded pairing, Newell-normal crease bake, 3 B per loop entry) are renderer-managed —
+  built automatically in the prepare stage under the allocate-before-any-pixel
+  contract, cached per mesh, with `scene.prebuildOutline()` for setup-time visibility
+  and `renderer.invalidateOutline(mesh)` for topology changes. Because only the two
+  endpoint shades ever cross the seam, the rendered frame is **identical under all ten
+  dither methods** — pinned as the mode's own invariant. **No existing golden pins
+  moved** — everything new is mode-gated (the facing-bit memset/stores and the draw
+  branch run only under `TD_OUTLINE`; no shared floating-point expression or draw-set
+  changed), the same mechanism as the addLight/TD_CEL precedents, verified by the
+  opt-out identity tests on both CI OSes. New pins: `GOLDEN_OUTLINE_FRAME` (one hash
+  asserted across all ten dithers), `GOLDEN_OUTLINE_565`, and the `GOLDEN_TABLE_BOX` /
+  `GOLDEN_TABLE_CONE` edge-table structure hashes. Renderer sizing grows 16 → 17 B/face
+  and ~104 → ~108 B/object. Custom targets note: `TD_MaterialCtx.mode` (informational)
+  may now carry the value 4, and outline latches BLACK (or WHITE) for fills, WHITE for
+  ink. New example: `OutlineGallery`.
 - **Multiple directional lights: `TD_Scene::addLight` / `removeLight` /
   `firstExtraLight`.** Extra user-owned `TD_Light` objects join the scene intrusively —
   allocation-free, uncapped, one scene at a time, the same membership contract as

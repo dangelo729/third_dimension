@@ -68,11 +68,14 @@ uint64_t fbHash();
 extern uint32_t lcg;
 float frand(float lo, float hi);
 
-// suite entry points, run in this order by test_main.cpp.
+// suite entry points, run in this order by test_main.cpp. the outline suite
+// runs last so its draws leave the shared LCG fuzz stream of the earlier
+// suites untouched.
 void runDitherTests();
 void runRenderTests();
 void runCelTests();
 void runPrimitiveTests();
 void runLightTests();
+void runOutlineTests();
 
 #endif  // TD_TEST_COMMON_H
