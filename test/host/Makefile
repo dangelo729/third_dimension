@@ -17,7 +17,8 @@ CPPFLAGS := -I../../src
 CORE_SRC := $(wildcard ../../src/*.cpp) $(wildcard ../../src/internal/*.cpp)
 TEST_SRC := $(wildcard test_*.cpp)
 HDRS := $(wildcard ../../src/*.h) $(wildcard ../../src/internal/*.h) \
-        $(wildcard ../../src/models/*.h) test_common.h
+        $(wildcard ../../src/models/*.h) test_common.h \
+        TD_Model_ExportFixture.h TD_Model_DecimatedFixture.h
 
 td_host_tests: $(CORE_SRC) $(TEST_SRC) $(HDRS)
 	$(CXX) $(CXXFLAGS) $(CPPFLAGS) $(CORE_SRC) $(TEST_SRC) -o $@

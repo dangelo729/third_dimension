@@ -213,6 +213,7 @@ button.armed { background: var(--secondary); font-weight: bold; }
       <button id="bexport">export .h</button>
       <div class="sep"></div>
       <button id="bmode">shaded</button>
+      <button id="bview" title="toggle between full editing resolution and the decimated export result">edit view</button>
       <button id="bsnap">snap on</button>
       <span id="budget"></span>
     </div>
@@ -780,12 +781,18 @@ function validateProject(p) {
             errs.push(`${at}: bad mold dab ${j + 1} (need at [x,y,z], r > 0, finite s)`);
         });
     }
+    if (part.decimate !== undefined) {
+      if (!part.decimate || typeof part.decimate !== "object" ||
+          !Number.isFinite(part.decimate.target) || !(part.decimate.target >= 4) ||
+          Math.floor(part.decimate.target) !== part.decimate.target)
+        errs.push(`${at}: bad decimate block (expected { target: integer >= 4 })`);
+    }
   });
   return errs;
 }
 
 // serialize with a stable field order so project diffs stay minimal; the
-// mold block is emitted only when it holds dabs, so unsculpted projects
+// mold and decimate blocks are emitted only when active, so plain projects
 // serialize exactly as before.
 function serializeProject(p) {
   const parts = p.parts.map((part) => {
@@ -795,6 +802,8 @@ function serializeProject(p) {
     };
     const dabs = moldedDabs(part);
     if (dabs) out.mold = { dabs: dabs.map((d) => ({ at: d.at, r: d.r, s: d.s })) };
+    const target = decimateTarget(part);
+    if (target) out.decimate = { target };
     return out;
   });
   return JSON.stringify(
@@ -847,20 +856,36 @@ function parseProjectText(text) {
 // euler order), normals n' = normalize(R·diag(1/s)·n) — the inverse-
 // transpose path, which both the preview shading and the baked header use,
 // so they cannot disagree. Returns null when the part's params are invalid.
-function partWorldGeometry(part) {
-  const mesh = generate(part.type, part.params);
+// forExport additionally applies the part's decimate block (the editing
+// preview keeps full resolution so the mold brush always has the dense
+// mesh to work against; the export preview and the baker pass true and see
+// the identical decimated geometry — the parity point survives).
+function partWorldGeometry(part, forExport) {
+  let mesh = generate(part.type, part.params);
   if (mesh.nverts === 0) return null;
   // molding: keep the pre-displacement positions (new dabs anchor to the
   // base surface — see raycastMoldSurface), displace along smooth welded
   // normals, then swap the stale analytic normals for converter-style
   // creased ones. generate() built fresh arrays, so the in-place edits
-  // touch nothing shared.
+  // touch nothing shared. Decimation runs after molding — QEM must see the
+  // sculpted shape to know where detail lives — and replaces the analytic
+  // normals the same way.
   const dabs = moldedDabs(part);
   if (dabs) {
     mesh.baseVerts = mesh.verts.map((v) => v.slice());
     applyMold(mesh, dabs);
-    recomputeCreasedNormals(mesh);
   }
+  const target = forExport ? decimateTarget(part) : null;
+  let decimated = false;
+  if (target) {
+    const dec = decimateMesh(mesh, target, part.scale);
+    if (dec) {
+      mesh = dec;
+      decimated = true;
+    }
+  }
+  const resmoothed = !!dabs || decimated;
+  if (resmoothed) recomputeCreasedNormals(mesh);
   const R = eulerXYZ(part.rotation[0], part.rotation[1], part.rotation[2]);
   const [sx, sy, sz] = part.scale;
   const [px, py, pz] = part.position;
@@ -881,7 +906,10 @@ function partWorldGeometry(part) {
                             R[3] * x + R[4] * y + R[5] * z,
                             R[6] * x + R[7] * y + R[8] * z]);
   }
-  return { mesh, wverts, wnorms };
+  // resmoothed: whether cnorms went through the 60-degree recompute (true
+  // for molded parts and for parts decimation actually collapsed) — the
+  // emitter's normals banner reports it instead of guessing from the part
+  return { mesh, wverts, wnorms, resmoothed };
 }
 
 // ---- lighting (library defaults, scene lighting not editable in v1) -------
@@ -948,21 +976,33 @@ function applyMold(mesh, dabs) {
       else acc.set(k, n.slice());
     }
   }
+  // sculptField: per-vertex sum of |s|*falloff — how much sculpting
+  // ATTENTION a vertex received, not its net displacement (a dent overlaid
+  // on a bump cancels in d but both count as attention). Decimation reads
+  // it as an importance field so the export budget pools where the user
+  // actually worked. Verts sharing a position see identical dab sums, so
+  // the field is weld-consistent like the displacement itself.
+  const field = new Array(mesh.nverts);
   for (let i = 0; i < mesh.nverts; ++i) {
     const v = mesh.verts[i];
     const n = normalize3(acc.get(posKeyOf(v)) || [0, 0, 1]);
-    let d = 0;
+    let d = 0, a = 0;
     for (const dab of dabs) {
       const dx = v[0] - dab.at[0], dy = v[1] - dab.at[1], dz = v[2] - dab.at[2];
       const w = moldFalloff(Math.sqrt(dx * dx + dy * dy + dz * dz) / dab.r);
-      if (w > 0) d += dab.s * w;
+      if (w > 0) {
+        d += dab.s * w;
+        a += Math.abs(dab.s) * w;
+      }
     }
+    field[i] = a;
     if (d !== 0) {
       v[0] += n[0] * d;
       v[1] += n[1] * d;
       v[2] += n[2] * d;
     }
   }
+  mesh.sculptField = field;
 }
 
 // after displacement the analytic normals are stale; recompute per-corner
@@ -1044,6 +1084,341 @@ function recomputeCreasedNormals(mesh) {
 function moldedDabs(part) {
   return part.mold && Array.isArray(part.mold.dabs) && part.mold.dabs.length
       ? part.mold.dabs : null;
+}
+
+// ---- decimation (export-stage QEM edge collapse) --------------------------
+// A part's optional decimate block { target: N } asks the EXPORT to carry at
+// most N triangles: sculpting always works the full generated resolution,
+// and quadric error metrics (Garland–Heckbert) then drain triangles out of
+// the flat regions while the sculpted detail — where collapsing costs
+// error — keeps its density. Collapse runs in SCALED space (diag(scale)
+// applied) so error is measured on the shape that actually renders;
+// rotation and translation are isometries and cannot affect it. Output
+// faces are all triangles (polygon loops do not survive edge collapse) and
+// cnorms come back empty — the caller recomputes converter-style creased
+// normals. Deterministic: the heap comparator is a strict total order
+// (cost, then vertex ids), maps and sets iterate in insertion order, and
+// nothing reads clocks or randomness — the same mesh and target always
+// produce the same output, so exports stay byte-stable.
+
+function decimateTarget(part) {
+  const d = part.decimate;
+  return d && typeof d === "object" && Number.isFinite(d.target) && d.target >= 4
+      ? Math.floor(d.target) : null;
+}
+
+// how many times more expensive a collapse becomes at the sculpt field's
+// peak (see the importance block below): high enough that noses/ears
+// visibly keep their mesh, low enough that the base surface never starves
+const SCULPT_BOOST = 16;
+
+// null when there is nothing to do (target >= current tris, or target < 4);
+// may stop above target if every remaining collapse would break manifold-
+// ness or flip a triangle (tiny meshes hit this long before quality does).
+function decimateMesh(mesh, targetTris, scale) {
+  const sx = scale ? scale[0] : 1, sy = scale ? scale[1] : 1, sz = scale ? scale[2] : 1;
+
+  // weld positions into a connectivity graph, in scaled space
+  const keyToId = new Map();
+  const P = [];                          // welded scaled positions, flat
+  const weldOf = new Array(mesh.nverts);
+  for (let i = 0; i < mesh.nverts; ++i) {
+    const v = mesh.verts[i];
+    const k = posKeyOf(v);
+    let id = keyToId.get(k);
+    if (id === undefined) {
+      id = P.length / 3;
+      keyToId.set(k, id);
+      P.push(v[0] * sx, v[1] * sy, v[2] * sz);
+    }
+    weldOf[i] = id;
+  }
+  const NV = P.length / 3;
+
+  const T = [];                          // tri corners over welded ids; [0]<0 = dead
+  for (const t of mesh.tris) {
+    const a = weldOf[t[0]], b = weldOf[t[1]], c = weldOf[t[2]];
+    if (a !== b && b !== c && c !== a) T.push(a, b, c);
+  }
+  let liveTris = T.length / 3;
+  if (!(targetTris >= 4) || targetTris >= liveTris) return null;
+
+  const vtris = new Array(NV);           // vertex -> set of incident live tris
+  for (let i = 0; i < NV; ++i) vtris[i] = new Set();
+  for (let t = 0; t < liveTris; ++t) {
+    vtris[T[3 * t]].add(t);
+    vtris[T[3 * t + 1]].add(t);
+    vtris[T[3 * t + 2]].add(t);
+  }
+
+  // unnormalized tri normal into out; returns its length (2x area).
+  // sqrt(x^2+y^2+z^2), NOT Math.hypot: hypot is implementation-approximated
+  // (engines legitimately differ in the last ulp) and the heap turns ulps
+  // into different collapse ORDERS — sqrt/+/* are correctly rounded
+  // everywhere, keeping exports byte-identical across browsers and jsc.
+  const nrm = [0, 0, 0];
+  const triNormalArea = (t, out) => {
+    const a = T[3 * t] * 3, b = T[3 * t + 1] * 3, c = T[3 * t + 2] * 3;
+    const ux = P[b] - P[a], uy = P[b + 1] - P[a + 1], uz = P[b + 2] - P[a + 2];
+    const vx = P[c] - P[a], vy = P[c + 1] - P[a + 1], vz = P[c + 2] - P[a + 2];
+    out[0] = uy * vz - uz * vy;
+    out[1] = uz * vx - ux * vz;
+    out[2] = ux * vy - uy * vx;
+    return Math.sqrt(out[0] * out[0] + out[1] * out[1] + out[2] * out[2]);
+  };
+
+  // per-vertex quadrics: area-weighted face planes, then a heavy plane
+  // through each boundary edge perpendicular to its face (open meshes:
+  // collapses may slide along the rim but never pull it inward)
+  // symmetric 4x4 as [a11 a12 a13 a14 a22 a23 a24 a33 a34 a44]
+  const Q = new Float64Array(NV * 10);
+  const addPlane = (vi, nx, ny, nz, d, w) => {
+    const o = vi * 10;
+    Q[o] += w * nx * nx; Q[o + 1] += w * nx * ny; Q[o + 2] += w * nx * nz;
+    Q[o + 3] += w * nx * d; Q[o + 4] += w * ny * ny; Q[o + 5] += w * ny * nz;
+    Q[o + 6] += w * ny * d; Q[o + 7] += w * nz * nz; Q[o + 8] += w * nz * d;
+    Q[o + 9] += w * d * d;
+  };
+  const edgeUse = new Map();             // lo*NV+hi -> incident tri count
+  for (let t = 0; t < liveTris; ++t) {
+    const len = triNormalArea(t, nrm);
+    for (let k = 0; k < 3; ++k) {
+      const a = T[3 * t + k], b = T[3 * t + (k + 1) % 3];
+      const ek = a < b ? a * NV + b : b * NV + a;
+      edgeUse.set(ek, (edgeUse.get(ek) || 0) + 1);
+    }
+    if (len < 1e-30) continue;
+    const nx = nrm[0] / len, ny = nrm[1] / len, nz = nrm[2] / len;
+    const a = T[3 * t] * 3;
+    const d = -(nx * P[a] + ny * P[a + 1] + nz * P[a + 2]);
+    const w = 0.5 * len;
+    addPlane(T[3 * t], nx, ny, nz, d, w);
+    addPlane(T[3 * t + 1], nx, ny, nz, d, w);
+    addPlane(T[3 * t + 2], nx, ny, nz, d, w);
+  }
+  for (const [ek, count] of edgeUse) {
+    if (count !== 1) continue;
+    const lo = Math.floor(ek / NV), hi = ek % NV;
+    let tri = -1;
+    for (const t of vtris[lo]) if (vtris[hi].has(t)) { tri = t; break; }
+    if (tri < 0) continue;
+    const len = triNormalArea(tri, nrm);
+    if (len < 1e-30) continue;
+    const fx = nrm[0] / len, fy = nrm[1] / len, fz = nrm[2] / len;
+    const ex = P[hi * 3] - P[lo * 3], ey = P[hi * 3 + 1] - P[lo * 3 + 1],
+          ez = P[hi * 3 + 2] - P[lo * 3 + 2];
+    let cx = ey * fz - ez * fy, cy = ez * fx - ex * fz, cz = ex * fy - ey * fx;
+    const cl = Math.sqrt(cx * cx + cy * cy + cz * cz);
+    if (cl < 1e-30) continue;
+    cx /= cl; cy /= cl; cz /= cl;
+    const d = -(cx * P[lo * 3] + cy * P[lo * 3 + 1] + cz * P[lo * 3 + 2]);
+    const wBound = 1000 * (ex * ex + ey * ey + ez * ez);
+    addPlane(lo, cx, cy, cz, d, wBound);
+    addPlane(hi, cx, cy, cz, d, wBound);
+  }
+
+  // sculpt-aware importance: applyMold leaves a per-vertex attention field
+  // (sum of |s|*falloff) on molded meshes; scaling a vertex's quadric by
+  // 1 + BOOST*(field/max) makes collapses there proportionally expensive,
+  // so the triangle budget pools where the user sculpted instead of QEM's
+  // even error split (on a sphere everything is equally curved, which
+  // reads as uniform density — faces deserve better than skull backs).
+  // Normalized by the field's own max: scale-free, tessellation-free,
+  // deterministic. Unmolded meshes carry no field and are untouched.
+  if (mesh.sculptField) {
+    const field = mesh.sculptField;
+    let aMax = 0;
+    for (let i = 0; i < mesh.nverts; ++i) if (field[i] > aMax) aMax = field[i];
+    if (aMax > 0) {
+      const wOf = new Float64Array(NV).fill(1);
+      for (let i = 0; i < mesh.nverts; ++i)
+        wOf[weldOf[i]] = 1 + SCULPT_BOOST * (field[i] / aMax);
+      for (let vi = 0; vi < NV; ++vi) {
+        const w = wOf[vi];
+        if (w === 1) continue;
+        const o = vi * 10;
+        for (let k = 0; k < 10; ++k) Q[o + k] *= w;
+      }
+    }
+  }
+
+  // collapse position + cost from the summed endpoint quadric: the optimal
+  // point where the singular system allows it, else best of endpoints/mid
+  const QS = new Float64Array(10);
+  const evalQS = (x, y, z) =>
+    QS[0] * x * x + 2 * QS[1] * x * y + 2 * QS[2] * x * z + 2 * QS[3] * x +
+    QS[4] * y * y + 2 * QS[5] * y * z + 2 * QS[6] * y +
+    QS[7] * z * z + 2 * QS[8] * z + QS[9];
+  const solve = (u, v, out) => {
+    const ou = u * 10, ov = v * 10;
+    for (let k = 0; k < 10; ++k) QS[k] = Q[ou + k] + Q[ov + k];
+    const a11 = QS[0], a12 = QS[1], a13 = QS[2], b1 = QS[3];
+    const a22 = QS[4], a23 = QS[5], b2 = QS[6];
+    const a33 = QS[7], b3 = QS[8];
+    const det = a11 * (a22 * a33 - a23 * a23) - a12 * (a12 * a33 - a23 * a13) +
+                a13 * (a12 * a23 - a22 * a13);
+    const tr = Math.abs(a11) + Math.abs(a22) + Math.abs(a33);
+    if (Math.abs(det) > 1e-12 * tr * tr * tr + 1e-300) {
+      const inv = 1 / det;
+      out[0] = -inv * (b1 * (a22 * a33 - a23 * a23) - a12 * (b2 * a33 - a23 * b3) +
+                       a13 * (b2 * a23 - a22 * b3));
+      out[1] = -inv * (a11 * (b2 * a33 - a23 * b3) - b1 * (a12 * a33 - a13 * a23) +
+                       a13 * (a12 * b3 - b2 * a13));
+      out[2] = -inv * (a11 * (a22 * b3 - b2 * a23) - a12 * (a12 * b3 - b2 * a13) +
+                       b1 * (a12 * a23 - a22 * a13));
+      return evalQS(out[0], out[1], out[2]);
+    }
+    let best = Infinity;
+    const cx = [P[u * 3], P[v * 3], (P[u * 3] + P[v * 3]) / 2];
+    const cy = [P[u * 3 + 1], P[v * 3 + 1], (P[u * 3 + 1] + P[v * 3 + 1]) / 2];
+    const cz = [P[u * 3 + 2], P[v * 3 + 2], (P[u * 3 + 2] + P[v * 3 + 2]) / 2];
+    for (let k = 0; k < 3; ++k) {
+      const c = evalQS(cx[k], cy[k], cz[k]);
+      if (c < best) { best = c; out[0] = cx[k]; out[1] = cy[k]; out[2] = cz[k]; }
+    }
+    return best;
+  };
+
+  // lazy binary min-heap; an entry is stale when either endpoint's
+  // generation moved on (only a collapse changes a vertex, bumping both)
+  const genOf = new Uint32Array(NV);
+  const heap = [];
+  const less = (a, b) =>
+    a.cost !== b.cost ? a.cost < b.cost : a.u !== b.u ? a.u < b.u : a.v < b.v;
+  const hpush = (e) => {
+    heap.push(e);
+    let i = heap.length - 1;
+    while (i > 0) {
+      const p = (i - 1) >> 1;
+      if (less(heap[i], heap[p])) { const t = heap[p]; heap[p] = heap[i]; heap[i] = t; i = p; }
+      else break;
+    }
+  };
+  const hpop = () => {
+    const top = heap[0], last = heap.pop();
+    if (heap.length) {
+      heap[0] = last;
+      let i = 0;
+      for (;;) {
+        const l = 2 * i + 1, r = l + 1;
+        let m = i;
+        if (l < heap.length && less(heap[l], heap[m])) m = l;
+        if (r < heap.length && less(heap[r], heap[m])) m = r;
+        if (m === i) break;
+        const t = heap[m]; heap[m] = heap[i]; heap[i] = t; i = m;
+      }
+    }
+    return top;
+  };
+  const pos = [0, 0, 0];
+  const pushEdge = (a, b) => {
+    const u = a < b ? a : b, v = a < b ? b : a;
+    const cost = solve(u, v, pos);
+    hpush({ cost, u, v, x: pos[0], y: pos[1], z: pos[2], gu: genOf[u], gv: genOf[v] });
+  };
+  for (const ek of edgeUse.keys()) pushEdge(Math.floor(ek / NV), ek % NV);
+
+  const alive = new Uint8Array(NV).fill(1);
+  const neighborsOf = (u) => {
+    const s = new Set();
+    for (const t of vtris[u]) {
+      if (T[3 * t] !== u) s.add(T[3 * t]);
+      if (T[3 * t + 1] !== u) s.add(T[3 * t + 1]);
+      if (T[3 * t + 2] !== u) s.add(T[3 * t + 2]);
+    }
+    return s;
+  };
+  while (liveTris > targetTris && heap.length) {
+    const e = hpop();
+    const { u, v } = e;
+    if (!alive[u] || !alive[v] || e.gu !== genOf[u] || e.gv !== genOf[v]) continue;
+    const shared = [];
+    for (const t of vtris[u]) if (vtris[v].has(t)) shared.push(t);
+    if (!shared.length) continue;        // no longer an edge
+    // link condition: the common neighbors must be exactly the opposite
+    // corners of the shared tris, else the collapse pinches non-manifold
+    const nu = neighborsOf(u), nv = neighborsOf(v);
+    let common = 0;
+    for (const n of nu) if (nv.has(n)) ++common;
+    if (common !== shared.length) continue;
+    // geometric guard: no surviving incident tri may flip or degenerate
+    const ux = P[u * 3], uy = P[u * 3 + 1], uz = P[u * 3 + 2];
+    const wx = P[v * 3], wy = P[v * 3 + 1], wz = P[v * 3 + 2];
+    let ok = true;
+    for (const w of [u, v]) {
+      if (!ok) break;
+      for (const t of vtris[w]) {
+        if (shared.indexOf(t) >= 0) continue;
+        const before = triNormalArea(t, nrm);
+        const bx = nrm[0], by = nrm[1], bz = nrm[2];
+        P[w * 3] = e.x; P[w * 3 + 1] = e.y; P[w * 3 + 2] = e.z;
+        const after = triNormalArea(t, nrm);
+        P[u * 3] = ux; P[u * 3 + 1] = uy; P[u * 3 + 2] = uz;
+        P[v * 3] = wx; P[v * 3 + 1] = wy; P[v * 3 + 2] = wz;
+        if (after < 1e-30 ||
+            (before > 1e-30 && bx * nrm[0] + by * nrm[1] + bz * nrm[2] <= 0)) {
+          ok = false;
+          break;
+        }
+      }
+    }
+    if (!ok) continue;
+
+    // apply: v merges into u at the collapse position
+    P[u * 3] = e.x; P[u * 3 + 1] = e.y; P[u * 3 + 2] = e.z;
+    const ou = u * 10, ov = v * 10;
+    for (let k = 0; k < 10; ++k) Q[ou + k] += Q[ov + k];
+    alive[v] = 0;
+    for (const t of shared) {
+      vtris[T[3 * t]].delete(t);
+      vtris[T[3 * t + 1]].delete(t);
+      vtris[T[3 * t + 2]].delete(t);
+      T[3 * t] = -1;
+      --liveTris;
+    }
+    for (const t of Array.from(vtris[v])) {
+      for (let k = 0; k < 3; ++k) if (T[3 * t + k] === v) T[3 * t + k] = u;
+      vtris[v].delete(t);
+      vtris[u].add(t);
+    }
+    ++genOf[u];
+    ++genOf[v];
+    for (const n of neighborsOf(u)) pushEdge(u, n);
+  }
+
+  // rebuild an editor-format mesh: all-triangle faces, local space again
+  const remap = new Int32Array(NV).fill(-1);
+  const verts = [];
+  const isx = 1 / sx, isy = 1 / sy, isz = 1 / sz;
+  const outTris = [];
+  for (let t = 0; t < T.length / 3; ++t) {
+    if (T[3 * t] < 0) continue;
+    const tri = [0, 0, 0];
+    for (let k = 0; k < 3; ++k) {
+      const w = T[3 * t + k];
+      if (remap[w] < 0) {
+        remap[w] = verts.length;
+        verts.push([P[w * 3] * isx, P[w * 3 + 1] * isy, P[w * 3 + 2] * isz]);
+      }
+      tri[k] = remap[w];
+    }
+    outTris.push(tri);
+  }
+  const faces = [], faceVerts = [];
+  for (let t = 0; t < outTris.length; ++t) {
+    faces.push([t, 1, 3 * t, 3]);
+    faceVerts.push(outTris[t][0], outTris[t][1], outTris[t][2]);
+  }
+  let bound = 0;
+  for (const v of verts) {
+    const d = Math.sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
+    if (d > bound) bound = d;
+  }
+  return {
+    nverts: verts.length, ntris: outTris.length, nfaces: outTris.length,
+    faceVertCount: faceVerts.length, boundRadius: bound,
+    verts, tris: outTris, faces, faceVerts, cnorms: [],
+  };
 }
 
 // Möller–Trumbore; returns { t, u, v } (ray parameter + barycentrics on
@@ -1137,10 +1512,22 @@ function signedVolume(verts, tris) {
 const CAP_U16 = 65535;
 const CAP_TRIS = 21845;  // 3*ntris (the cnorm table) must fit uint16
 
+// export counts: what bake() will actually emit. For a decimated part that
+// means running the real collapse (on the molded shape — QEM keeps detail
+// where the sculpt put it, so the counts depend on it); estimates would
+// drift from the exact caps the format enforces. Mold alone never changes
+// counts, so undecimated parts stay a bare generate().
 function countsOf(parts) {
   let nv = 0, nt = 0, nf = 0, nloop = 0;
   for (const part of parts) {
-    const m = generate(part.type, part.params);
+    let m = generate(part.type, part.params);
+    const target = decimateTarget(part);
+    if (target) {
+      const dabs = moldedDabs(part);
+      if (dabs) applyMold(m, dabs);
+      const dec = decimateMesh(m, target, part.scale);
+      if (dec) m = dec;
+    }
     nv += m.nverts;
     nt += m.ntris;
     nf += m.nfaces;
@@ -1163,8 +1550,12 @@ function budgetOf(c) {
 
 // ---- part world AABB + the interpenetration soft lint ---------------------
 
+// export-view AABB: the only consumer is bake()'s interpenetration lint,
+// which must describe the geometry actually shipped — a decimated part's
+// exported extents differ from its full-res ones in both directions
+// (collapse pulls verts in, facet-plane placement pushes rim verts out)
 function partWorldAABB(part) {
-  const geo = partWorldGeometry(part);
+  const geo = partWorldGeometry(part, true);
   if (!geo) return null;
   const lo = [Infinity, Infinity, Infinity], hi = [-Infinity, -Infinity, -Infinity];
   for (const v of geo.wverts)
@@ -1206,17 +1597,14 @@ function overlapPairs(parts) {
 function bake(project) {
   if (!project.parts.length) return { ok: false, error: "nothing to export: the scene has no parts" };
 
-  const counts = countsOf(project.parts);
-  const budget = budgetOf(counts);
-  if (budget.over.length)
-    return { ok: false, error: "export exceeds TD mesh format 1 caps:\n  " + budget.over.join("\n  ") };
-
   const verts = [], tris = [], cnorms = [], faces = [], faceVerts = [];
   const partRanges = [];
+  let resmoothed = false;
   for (const part of project.parts) {
-    const geo = partWorldGeometry(part);
+    const geo = partWorldGeometry(part, true);
     if (!geo)
       return { ok: false, error: `part ${part.id} (${part.type}) has invalid parameters and generates no geometry` };
+    if (geo.resmoothed) resmoothed = true;
     const vertBase = verts.length, triBase = tris.length, loopBase = faceVerts.length;
     for (const v of geo.wverts) verts.push(v.slice());
     for (const t of geo.mesh.tris) tris.push([t[0] + vertBase, t[1] + vertBase, t[2] + vertBase]);
@@ -1225,6 +1613,14 @@ function bake(project) {
     for (const i of geo.mesh.faceVerts) faceVerts.push(i + vertBase);
     partRanges.push({ part, triBase, triCount: geo.mesh.ntris });
   }
+
+  // format caps judged on the merged mesh — i.e. AFTER decimation, so a
+  // scene that only fits the format because of its decimate targets is
+  // still exportable (and counts/budget report what actually ships)
+  const counts = { nv: verts.length, nt: tris.length, nf: faces.length, nloop: faceVerts.length };
+  const budget = budgetOf(counts);
+  if (budget.over.length)
+    return { ok: false, error: "export exceeds TD mesh format 1 caps:\n  " + budget.over.join("\n  ") };
 
   // converter-parity normalization: center on the composite bbox center,
   // scale so the farthest vertex sits at exactly radius 1.
@@ -1258,6 +1654,8 @@ function bake(project) {
       return { ok: false, error: `part ${r.part.id} (${r.part.type}) has non-positive signed volume — ` +
                (moldedDabs(r.part)
                  ? "molding has pushed it inside-out (undo the deepest dents or soften the brush)"
+                 : decimateTarget(r.part)
+                 ? "decimation collapsed it degenerate (raise the part's export-tris target)"
                  : "winding is broken (this is a bug; please report the project JSON)") };
   }
 
@@ -1270,7 +1668,7 @@ function bake(project) {
     return { ok: false, error: "internal error: composite failed structural validation (please report the project JSON)" };
 
   return {
-    ok: true, mesh, counts, budget,
+    ok: true, mesh, counts, budget, resmoothed,
     preRadius: radius,
     volume: signedVolume(verts, tris),
     overlaps: overlapPairs(project.parts),
@@ -1371,8 +1769,8 @@ function emitHeader(project, baked) {
   lines.push("");
   lines.push("// per-corner unit normals (Gouraud), model space: 3 consecutive entries");
   lines.push("// per triangle in fan-corner order; " +
-             (project.parts.some((part) => moldedDabs(part))
-               ? "molded parts re-smoothed (60 deg crease), the rest analytic"
+             (baked.resmoothed
+               ? "molded/decimated parts re-smoothed (60 deg crease), the rest analytic"
                : "analytic primitive normals (no re-smoothing)"));
   lines.push(`static const float ${name}_cnorms[${m.cnorms.length}][3] TD_PROGMEM = {`);
   for (const n of m.cnorms) lines.push(`  { ${fmt6(n[0])}f, ${fmt6(n[1])}f, ${fmt6(n[2])}f },`);
@@ -1497,7 +1895,7 @@ return {
   // geometry / preview / bake
   partWorldGeometry, partWorldAABB, overlapPairs,
   moldFalloff, applyMold, recomputeCreasedNormals, moldedDabs,
-  raycastMoldSurface,
+  raycastMoldSurface, decimateTarget, decimateMesh,
   AMBIENT, LIGHT_DIR, shadeOf,
   validateMeshJS, signedVolume, countsOf, budgetOf, CAP_U16, CAP_TRIS,
   bake, emitHeader, cIdentifier, fileStem, fmtFixed,
@@ -1569,6 +1967,10 @@ let tool = "select";           // "select" | "mold" (the tools section)
 let brushSize = 0.3;           // mold brush radius, world units
 let brushStrength = 0.05;      // mold brush center displacement, world units
 let moldCursor = null;         // { panel, x, y, rpx, onSurface } brush circle
+let exportPreview = false;     // view decimated export geometry (a live view
+                               // preference like shadedMode, never undo
+                               // state; mutually exclusive with the mold
+                               // tool, which needs the full-res surface)
 let undoStack = [], redoStack = [];
 const UNDO_CAP = 100;
 let drag = null;               // active left-drag gesture (move/rotate/scale)
@@ -1579,13 +1981,13 @@ let lastMouse = { x: -1, y: -1 };  // client coords, for space-fullscreen hover
 const keysDown = new Set();
 let dirty = true;
 
-const geoCache = new WeakMap();  // part -> { rev, geo, shades }
+const geoCache = new WeakMap();  // part -> { rev, exp, geo, shades }
 function touch(part) { part._rev = (part._rev || 0) + 1; }
 function getGeo(part) {
   const rev = part._rev || 0;
   const hit = geoCache.get(part);
-  if (hit && hit.rev === rev) return hit;
-  const geo = C.partWorldGeometry(part);
+  if (hit && hit.rev === rev && hit.exp === exportPreview) return hit;
+  const geo = C.partWorldGeometry(part, exportPreview);
   let shades = null;
   if (geo) {
     // preview shading takes the baker's normal path (geo.wnorms) — never the
@@ -1593,7 +1995,7 @@ function getGeo(part) {
     shades = new Array(geo.wnorms.length);
     for (let i = 0; i < geo.wnorms.length; ++i) shades[i] = C.shadeOf(geo.wnorms[i]);
   }
-  const entry = { rev, geo, shades };
+  const entry = { rev, exp: exportPreview, geo, shades };
   geoCache.set(part, entry);
   return entry;
 }
@@ -2398,6 +2800,8 @@ stripName.addEventListener("change", () => {
 
 function syncStripButtons() {
   $("bmode").textContent = shadedMode ? "shaded" : "wireframe";
+  $("bview").textContent = exportPreview ? "export view" : "edit view";
+  $("bview").classList.toggle("armed", exportPreview);
   $("bsnap").textContent = project.snap ? "snap on" : "snap off";
   stripName.value = project.name;
 }
@@ -2492,6 +2896,23 @@ $("bmode").addEventListener("click", () => {
   syncStripButtons();
   invalidate();
 });
+// export preview draws partWorldGeometry(part, true) — decimated parts
+// exactly as they will bake. The mold brush needs the full-res surface
+// (dab anchoring raycasts its baseVerts), so entering either mode exits
+// the other; geo entries re-key on the flag, so no cache touching needed.
+function setExportPreview(on) {
+  // never mid-gesture: an active mold stroke must keep raycasting the
+  // full-res surface (its dab anchors need baseVerts), and swapping any
+  // drag's geometry underneath it helps nobody
+  if (exportPreview === on || drag) return;
+  exportPreview = on;
+  if (on && tool === "mold") setTool("select");
+  syncStripButtons();
+  invalidate();
+}
+$("bview").addEventListener("click", () => {
+  setExportPreview(!exportPreview);
+});
 $("bsnap").addEventListener("click", () => {
   project.snap = !project.snap;
   syncStripButtons();
@@ -2559,6 +2980,7 @@ for (const t of ["select", "mold"]) {
 }
 function setTool(t) {
   tool = t;
+  if (t === "mold") setExportPreview(false);  // sculpting is full-res only
   if (t !== "select") {
     armedType = null;
     ghost = null;
@@ -2709,6 +3131,26 @@ function refreshNumeric() {
     np.appendChild(numRow(spec.k, [inp]));
   }
 
+  // export decimation target: bake carries at most this many triangles —
+  // sculpt at full tessellation, ship lean (0 disables). The [export view]
+  // strip toggle shows the result.
+  const decInp = numInput(entries, () => String(C.decimateTarget(part) || 0), (v) => {
+    const nv = Math.floor(v);
+    if (nv <= 0) {
+      if (part.decimate === undefined) return false;  // no-op: keep undo/redo
+      delete part.decimate;
+    } else if (nv < 4) {
+      alert("export tris: 4 is the smallest closed mesh");
+      return false;
+    } else {
+      if (nv === C.decimateTarget(part)) return false;  // no-op
+      part.decimate = { target: nv };
+    }
+    touch(part);
+    return true;
+  });
+  np.appendChild(numRow("export tris", [decInp]));
+
   const triple = (label, get, apply) => {
     sect(label);
     const inputs = [0, 1, 2].map((axis) =>
@@ -2779,6 +3221,8 @@ function cloneInPlace(part) {
   dup.scale = part.scale.slice();
   const dabs = C.moldedDabs(part);
   if (dabs) dup.mold = { dabs: dabs.map((d) => ({ at: d.at.slice(), r: d.r, s: d.s })) };
+  const target = C.decimateTarget(part);
+  if (target) dup.decimate = { target };
   project.parts.push(dup);
   selectedId = dup.id;
   return dup;
