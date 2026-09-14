@@ -32,8 +32,16 @@ releases may break API; breaks are called out under a "Breaking" heading.
   edge's neighbor against the per-frame facing bits, so the lines migrate as objects
   rotate), crease edges (dihedrals sharper than `setOutlineCrease`, default 60° for
   converter parity), and boundary edges (open-mesh borders) — inked at exactly 2.0
-  over faces filled at exactly 0.0, so the painter's algorithm erases hidden lines for
-  free. `TD_MATERIAL_WHITE` faces fill at 2.0 instead (solid-white opt-in); decal faces
+  over faces filled at exactly 0.0. The fills record view depth per pixel (a **4 B/pixel**
+  depth buffer, sized from the target in the prepare stage, freed by
+  `releaseBuffers()`); the ink pass runs after every fill has landed and draws each line
+  pixel only where the edge's depth passes against the nearest fill at that pixel or
+  one of its four neighbors, within `TD_OUTLINE_DEPTH_TOL_PX` pixels' worth of the
+  face's steepest depth slope. So hidden lines stay hidden, and a contour is one closed
+  line on any mesh: inking inside the painter loop would let the next face's
+  pixel-center fill land on the line pixels its neighbor just drew, which on a mesh
+  with sub-pixel facets reads as a dotted silhouette. `TD_MATERIAL_WHITE` faces fill at
+  2.0 instead (solid-white opt-in); decal faces
   are skipped whole (their unshared loop edges would ink as permanent boundary
   rectangles). Edge-adjacency tables (new internal module `td_edge_table`: position-
   welded pairing, Newell-normal crease bake, 3 B per loop entry) are renderer-managed —
@@ -47,7 +55,8 @@ releases may break API; breaks are called out under a "Breaking" heading.
   changed), the same mechanism as the addLight/TD_CEL precedents, verified by the
   opt-out identity tests on both CI OSes. New pins: `GOLDEN_OUTLINE_FRAME` (one hash
   asserted across all ten dithers), `GOLDEN_OUTLINE_565`, and the `GOLDEN_TABLE_BOX` /
-  `GOLDEN_TABLE_CONE` edge-table structure hashes. Renderer sizing grows 16 → 17 B/face
+  `GOLDEN_TABLE_CONE` edge-table structure hashes, and a contour-closure test on a
+  dense sphere (a border flood must never reach the rim). Renderer sizing grows 16 → 17 B/face
   and ~104 → ~108 B/object. Custom targets note: `TD_MaterialCtx.mode` (informational)
   may now carry the value 4, and outline latches BLACK (or WHITE) for fills, WHITE for
   ink. New example: `OutlineGallery`.

@@ -183,8 +183,10 @@ for band-count vs dither-method guidance.
 `TD_OUTLINE` draws only the *lines that matter*: **silhouette** edges (where the
 surface turns away from the camera — view-dependent, they migrate as objects rotate),
 **crease** edges (dihedrals sharper than a threshold — the drawn-on feature lines),
-and **boundary** edges (open-mesh borders). Faces fill at the background shade, so the
-painter's algorithm erases hidden lines for free — the pen-and-ink / Obra Dinn look.
+and **boundary** edges (open-mesh borders). Faces fill at the background shade and
+record their depth; the ink pass runs after every fill and draws only the line pixels
+the fills leave in front — hidden lines stay hidden, and a contour is one closed line
+however fine the mesh — the pen-and-ink / Obra Dinn look.
 The signature read: a cone poking out of a sphere front-on shows a distinct ring inside
 the sphere's contour; side-on it fuses into one continuous outline.
 
@@ -264,7 +266,8 @@ no flags (export OBJ, not the raw `.txt`). Flags and pipeline internals are in
   `reserve()` moves allocation into `setup()`; `releaseBuffers()` gives it back.
 - Outline edge tables (`TD_OUTLINE` only): **3 B per polygon-loop entry** per distinct
   mesh, built once and cached (default sphere ≈ 1.4 KB); freed by `releaseBuffers()` /
-  `invalidateOutline()`.
+  `invalidateOutline()`. Plus the outline depth buffer, **4 B/pixel** (32 KB at
+  128×64), sized from the target in the prepare stage and freed by `releaseBuffers()`.
 - Diffusion dithers (`FLOYD`/`ATKINSON`): **8 B/pixel** (64 KB at 128×64), allocated at
   `setDither()`/`reserve()`, never mid-frame.
 - Procedural primitives: one `malloc` per mesh (default box 696 B, default sphere ≈

@@ -25,7 +25,9 @@ struct TD_OutlineCacheEntry;  // TD_Renderer.cpp: cached per-mesh edge tables
 // render() is not ISR-safe and not reentrant; two renderers, two displays,
 // or one scene rendered to several targets are all supported.
 //
-// occlusion is painter's algorithm on per-face mean view depth: correct for
+// occlusion is painter's algorithm on per-face mean view depth (TD_OUTLINE
+// adds a per-pixel depth test for its ink, against the frame's own fills):
+// correct for
 // non-interpenetrating objects with depth separation and reasonably
 // tessellated faces (interpenetration and occlusion cycles have no correct
 // draw order; large ground-plane faces mis-sort against small nearby
@@ -77,7 +79,9 @@ class TD_Renderer {
   // pre-size the working buffers in setup() so allocation failures surface at
   // init, not mid-run. sizing: 12 B/vertex + 17 B/face + ~108 B/object on
   // 32-bit MCUs (sizeof(ObjFrame): two 3x3 matrices, a translation, and
-  // per-object attributes), summed over the largest scene.
+  // per-object attributes), summed over the largest scene. TD_OUTLINE adds
+  // 4 B per target pixel (its depth buffer), sized in the prepare stage from
+  // the target, not here.
   bool reserve(uint32_t maxVerts, uint32_t maxFaces, uint16_t maxObjects);
   void releaseBuffers();
 
@@ -136,6 +140,10 @@ class TD_Renderer {
   uint32_t capF_ = 0;
   ObjFrame *objs_ = nullptr;
   uint16_t capObj_ = 0;
+  // TD_OUTLINE depth buffer: the nearest fill's view depth per target pixel,
+  // reset every outline frame; the ink pass tests each edge pixel against it.
+  float *depth_ = nullptr;
+  uint32_t capDepth_ = 0;
 
   // TD_OUTLINE edge-table cache: one entry per distinct mesh, keyed on the
   // mesh pointer plus a (nverts, nfaces, faceVertCount) checksum. built in
@@ -153,12 +161,18 @@ class TD_Renderer {
   bool celFrameOn_ = false;
   bool celSpanOn_ = false;
   float celAmbient_ = 0.0f;
+  // outline fill latches, valid only inside drawFrame: while depthOn_ the
+  // fill interpolant is view depth, written per pixel, and the shade that
+  // crosses the seam is the flat depthFlat_.
+  bool depthOn_ = false;
+  float depthFlat_ = 0.0f;
   float cullSign_ = 1.0f;
   uint8_t status_ = TD_OK;
   int16_t tw_ = 0, th_ = 0;  // target dims cached for the frame
   uint32_t lastDrawn_ = 0, lastSkipped_ = 0;
 
   bool ensureCapacity(uint32_t nv, uint32_t nf, uint16_t nobj);
+  bool ensureDepth(uint32_t npix);
   static int cmpFarFirst(const void *a, const void *b);
 
   // the fallible prologue (validate, size, resolve camera) and the infallible
@@ -179,13 +193,17 @@ class TD_Renderer {
                float x2, float y2, float s2);
   void fillSpan(TD_RenderTarget &t, int y, float xl, float xr, float sl, float sr);
   void celFillSpan(TD_RenderTarget &t, int y, float xl, float xr, float sl, float sr);
+  void depthFillSpan(TD_RenderTarget &t, int y, float xl, float xr, float zl, float zr);
   void drawLineShade(TD_RenderTarget &t, float x0, float y0, float x1, float y1, float shade);
+  void drawLineDepth(TD_RenderTarget &t, float x0, float y0, float z0, float x1, float y1,
+                     float z1, float tol);
   void outlineLoop(TD_RenderTarget &t, const ObjFrame &of, uint16_t loopStart,
                    uint16_t loopCount, float shade);
 
   // TD_OUTLINE internals: cache lookup/build, and the classified ink pass —
   // one face's loop edges drawn at 2.0 iff boundary, crease, or silhouette
-  // (the neighbor across the edge is not known front-facing).
+  // (the neighbor across the edge is not known front-facing), each pixel
+  // depth-tested against the frame's fills.
   bool ensureEdgeTable(const TD_Mesh &mesh);
   const TD_EdgeTable *findEdgeTable(const TD_Mesh &mesh) const;
   void outlineClassifiedLoop(TD_RenderTarget &t, const ObjFrame &of, uint16_t face);

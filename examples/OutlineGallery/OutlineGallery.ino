@@ -3,10 +3,11 @@
 // OutlineGallery — view-dependent feature-line rendering (TD_OUTLINE) on a
 // 1-bit display: only the lines that matter are drawn. silhouette edges
 // migrate across the surface as objects rotate, crease edges are the
-// drawn-on feature lines, boundary edges mark open borders — over
-// background-shade fills, so the painter erases hidden lines for free (the
-// pen-and-ink / Obra Dinn register; the frame is identical under every
-// dither method, since only the endpoint shades are drawn). three demos
+// drawn-on feature lines, boundary edges mark open borders — inked after
+// the background-shade fills, each pixel depth-tested against them, so
+// hidden lines stay hidden and every contour closes (the pen-and-ink /
+// Obra Dinn register; the frame is identical under every dither method,
+// since only the endpoint shades are drawn). three demos
 // cycle, narrated over Serial: a primitives tour of the classifier, a
 // crease-angle sweep on a cylinder (faceted -> feature-lined -> contour
 // only), and a two-object hidden-line scene — a cone poking out of a

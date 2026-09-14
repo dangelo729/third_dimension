@@ -165,6 +165,40 @@ static long discCount(double cx, double cy, double r) {
   return n;
 }
 
+// 4-connected flood of unlit pixels from the frame border; true if it reaches
+// (x, y). an 8-connected closed ink ring keeps the flood out of its interior,
+// so this is the closure test for a contour.
+static bool floodReaches(int x, int y) {
+  static uint8_t seen[H][W];
+  static int16_t qx[W * H], qy[W * H];
+  std::memset(seen, 0, sizeof(seen));
+  int head = 0, tail = 0;
+  auto push = [&](int px, int py) {
+    if (px < 0 || px >= W || py < 0 || py >= H || seen[py][px] || fb[py][px]) return;
+    seen[py][px] = 1;
+    qx[tail] = (int16_t)px;
+    qy[tail] = (int16_t)py;
+    ++tail;
+  };
+  for (int i = 0; i < W; ++i) {
+    push(i, 0);
+    push(i, H - 1);
+  }
+  for (int j = 0; j < H; ++j) {
+    push(0, j);
+    push(W - 1, j);
+  }
+  while (head < tail) {
+    int px = qx[head], py = qy[head];
+    ++head;
+    push(px + 1, py);
+    push(px - 1, py);
+    push(px, py + 1);
+    push(px, py - 1);
+  }
+  return seen[y][x] != 0;
+}
+
 void runOutlineTests() {
   TD_MonoTarget target(tdTestPlot, nullptr, (int16_t)W, (int16_t)H);
 
@@ -559,6 +593,27 @@ void runOutlineTests() {
       CHECK(winBoth == 0, "near fill must erase the far ink in the window (%ld/25 lit)",
             winBoth);
       CHECK(stats().count > 0, "hidden-line scene must still draw contours");
+    }
+  }
+
+  // ---- O6b. contour closure: the silhouette ring is one closed line ----
+  // a dense sphere (facets under a pixel at this scale) at several poses: a
+  // border flood of unlit pixels must never reach the rim center, so every
+  // silhouette pixel survived the fills of the faces around it.
+  {
+    TD_SphereMesh dense(48, 24);
+    TD_Scene scene;
+    TD_Object sphere(dense);
+    setupK5(scene, sphere);
+    for (int k = 0; k < 5; ++k) {
+      sphere.setRotation(0.2f * (float)k, 0.7f * (float)k, 0.0f);
+      renderToChecked(scene, target, TD_OUTLINE);
+      Stats s = stats();
+      CHECK(s.count > 20, "pose %d: dense sphere contour suspiciously sparse (%ld px)", k,
+            s.count);
+      int cx = (s.minx + s.maxx) / 2, cy = (s.miny + s.maxy) / 2;
+      CHECK(!floodReaches(cx, cy), "pose %d: contour ring is broken (border flood reached %d,%d)",
+            k, cx, cy);
     }
   }
 

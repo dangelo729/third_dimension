@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 #include "TD_Renderer.h"
 
+#include <float.h>
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
@@ -78,6 +79,9 @@ void TD_Renderer::releaseBuffers() {
   free(objs_);
   objs_ = nullptr;
   capObj_ = 0;
+  free(depth_);
+  depth_ = nullptr;
+  capDepth_ = 0;
   invalidateOutline(nullptr);
   free(outlineCache_);
   outlineCache_ = nullptr;
@@ -140,6 +144,19 @@ bool TD_Renderer::ensureCapacity(uint32_t nv, uint32_t nf, uint16_t nobj) {
 static inline bool tdKeepObject(const TD_Object &o) {
   const TD_Mesh &m = o.mesh();
   return o.visible() && m.nverts != 0 && m.ntris != 0 && m.nfaces != 0;
+}
+
+// the TD_OUTLINE depth buffer: one float per target pixel, grown to the
+// largest target seen and reassigned only on success, like the rest.
+bool TD_Renderer::ensureDepth(uint32_t npix) {
+  if (npix <= capDepth_) return true;
+  if (npix > 0x0FFFFFFFu) return false;
+  float *p = (float *)malloc((size_t)npix * sizeof(float));
+  if (!p) return false;
+  free(depth_);
+  depth_ = p;
+  capDepth_ = npix;
+  return true;
 }
 
 // ---- TD_OUTLINE edge-table cache -------------------------------------------
@@ -283,9 +300,10 @@ bool TD_Renderer::prepare(const TD_Scene &scene, TD_Camera &camera, TD_RenderTar
     return false;
   }
 
-  // TD_OUTLINE edge tables for every kept mesh, still before any pixel: a
-  // failed build aborts with the target untouched, exactly like the working
-  // buffers (allocate-before-any-pixel contract). cached tables are free.
+  // TD_OUTLINE edge tables for every kept mesh and the depth buffer for this
+  // target, still before any pixel: a failed build aborts with the target
+  // untouched, exactly like the working buffers (allocate-before-any-pixel
+  // contract). cached tables are free.
   if (mode_ == TD_OUTLINE) {
     for (const TD_Object *o = scene.firstObject(); o; o = o->next_) {
       if (!tdKeepObject(*o)) continue;
@@ -293,6 +311,10 @@ bool TD_Renderer::prepare(const TD_Scene &scene, TD_Camera &camera, TD_RenderTar
         status_ = TD_ERR_ALLOC;
         return false;
       }
+    }
+    if (!ensureDepth((uint32_t)tw_ * (uint32_t)th_)) {
+      status_ = TD_ERR_ALLOC;
+      return false;
     }
   }
 
@@ -487,6 +509,14 @@ void TD_Renderer::drawFrame(const TD_Scene &scene, const TD_Camera &camera,
   celAmbient_ = ambient;
   celFrameOn_ = mode_ == TD_CEL && 1.0f - ambient > 0.0f;
 
+  // TD_OUTLINE keeps the nearest fill depth per pixel across the frame; the
+  // ink pass after the fills tests every edge pixel against it.
+  depthOn_ = false;
+  if (outlineMode) {
+    const uint32_t npix = (uint32_t)tw_ * (uint32_t)th_;
+    for (uint32_t i = 0; i < npix; ++i) depth_[i] = FLT_MAX;
+  }
+
   for (uint32_t i = 0; i < nRec; ++i) {
     const DrawRec &r = rec_[i];
     const ObjFrame &of = objs_[r.obj];
@@ -503,11 +533,11 @@ void TD_Renderer::drawFrame(const TD_Scene &scene, const TD_Camera &camera,
                       : (msh.fattr ? msh.fattr[r.face].mat : (uint8_t)TD_MATERIAL_LIT);
 
     if (outlineMode) {
-      // hidden-line pass: fill the face at the background shade so the
-      // painter erases hidden lines for free, then ink its classified
-      // feature edges at 2.0. WHITE faces fill at 2.0 instead (a face's
-      // opt-in to solid white — the eyeball case), keeping WHITE's
-      // unconditionally-lit contract; everything else fills at 0.0.
+      // fill pass: the face at the background shade, its view depth written
+      // per pixel for the ink pass that follows the loop. WHITE faces fill
+      // at 2.0 instead (a face's opt-in to solid white — the eyeball case),
+      // keeping WHITE's unconditionally-lit contract; everything else fills
+      // at 0.0.
       celSpanOn_ = false;
       const bool whiteFill = mat == TD_MATERIAL_WHITE;
       TD_MaterialCtx ctx;
@@ -517,18 +547,17 @@ void TD_Renderer::drawFrame(const TD_Scene &scene, const TD_Camera &camera,
       ctx.objectIdx = r.obj;
       ctx.faceIdx = r.face;
       target.setMaterial(ctx);
-      const float fillShade = whiteFill ? 2.0f : 0.0f;
+      depthOn_ = true;
+      depthFlat_ = whiteFill ? 2.0f : 0.0f;
       for (uint16_t t = triStart; t < triStart + triCount; ++t) {
         // every fan triangle fills — the per-triangle re-cull is skipped so
         // a non-planar face leaves no coverage holes for hidden lines to
-        // show through.
+        // show through. the interpolant is view depth, the shade is flat.
         uint16_t a = msh.tris[t][0], b = msh.tris[t][1], c = msh.tris[t][2];
-        fillTri(target, sx_[vb + a], sy_[vb + a], fillShade, sx_[vb + b], sy_[vb + b],
-                fillShade, sx_[vb + c], sy_[vb + c], fillShade);
+        fillTri(target, sx_[vb + a], sy_[vb + a], sz_[vb + a], sx_[vb + b], sy_[vb + b],
+                sz_[vb + b], sx_[vb + c], sy_[vb + c], sz_[vb + c]);
       }
-      ctx.mat = TD_MATERIAL_WHITE;
-      target.setMaterial(ctx);
-      outlineClassifiedLoop(target, of, r.face);
+      depthOn_ = false;
       continue;
     }
 
@@ -603,6 +632,24 @@ void TD_Renderer::drawFrame(const TD_Scene &scene, const TD_Camera &camera,
     }
   }
 
+  // TD_OUTLINE ink pass, after every fill has landed: each drawn face's
+  // classified edges, depth-tested per pixel against the nearest fill, so no
+  // fill lands on a line after it is drawn and no hidden line surfaces.
+  if (outlineMode) {
+    for (uint32_t i = 0; i < nRec; ++i) {
+      const DrawRec &r = rec_[i];
+      const ObjFrame &of = objs_[r.obj];
+      TD_MaterialCtx ctx;
+      ctx.mat = TD_MATERIAL_WHITE;
+      ctx.mode = mode_;
+      ctx.baseColor = of.baseColor;
+      ctx.objectIdx = r.obj;
+      ctx.faceIdx = r.face;
+      target.setMaterial(ctx);
+      outlineClassifiedLoop(target, of, r.face);
+    }
+  }
+
   lastDrawn_ = nRec;
 }
 
@@ -649,10 +696,11 @@ float td_celLevel(int band, float ambient, uint8_t bands) {
 
 // scanline fill sampling pixel centers, half-open on the right/bottom:
 // adjacent triangles sharing an edge neither crack nor double-draw. each
-// vertex carries its own shade; edges and spans interpolate it (Gouraud,
-// screen-linear). the row bounds are clamped in float space before the int
-// conversion so extreme projections cannot overflow the cast; in-range
-// values convert identically to the unclamped expression.
+// vertex carries its own shade (its view depth under the outline fill);
+// edges and spans interpolate it (Gouraud, screen-linear). the row bounds
+// are clamped in float space before the int conversion so extreme
+// projections cannot overflow the cast; in-range values convert identically
+// to the unclamped expression.
 void TD_Renderer::fillTri(TD_RenderTarget &t, float x0, float y0, float s0, float x1, float y1,
                           float s1, float x2, float y2, float s2) {
   float tx, ty, ts;
@@ -704,7 +752,8 @@ void TD_Renderer::fillTri(TD_RenderTarget &t, float x0, float y0, float s0, floa
       float tmp = xa; xa = xb; xb = tmp;
       tmp = sa; sa = sb; sb = tmp;
     }
-    if (celSpanOn_) celFillSpan(t, y, xa, xb, sa, sb);
+    if (depthOn_) depthFillSpan(t, y, xa, xb, sa, sb);
+    else if (celSpanOn_) celFillSpan(t, y, xa, xb, sa, sb);
     else fillSpan(t, y, xa, xb, sa, sb);
   }
 }
@@ -729,6 +778,31 @@ void TD_Renderer::fillSpan(TD_RenderTarget &t, int y, float xl, float xr, float 
   float w = xr - xl;
   float slope = w > 1e-6f ? (sr - sl) / w : 0.0f;
   t.plotShadeSpan((int16_t)y, (int16_t)xs, (int16_t)xe, xl, sl, slope);
+}
+
+// the outline fill's span: fillSpan's exact pixel selection, each pixel
+// keeping the nearer of its stored depth and this span's interpolated view
+// depth, then the flat background shade through the ordinary span path.
+void TD_Renderer::depthFillSpan(TD_RenderTarget &t, int y, float xl, float xr, float zl,
+                                float zr) {
+  if (!(xl <= xr)) return;
+  float fxs = ceilf(xl - 0.5f);
+  float fxe = ceilf(xr - 0.5f);
+  if (fxs < 0.0f) fxs = 0.0f;
+  if (fxs > (float)tw_) fxs = (float)tw_;
+  if (fxe < 0.0f) fxe = 0.0f;
+  if (fxe > (float)tw_) fxe = (float)tw_;
+  int xs = (int)fxs;
+  int xe = (int)fxe - 1;
+  if (xe < xs) return;
+  float w = xr - xl;
+  float slope = w > 1e-6f ? (zr - zl) / w : 0.0f;
+  float *row = depth_ + (uint32_t)y * (uint32_t)tw_;
+  for (int x = xs; x <= xe; ++x) {
+    float z = zl + ((float)x + 0.5f - xl) * slope;
+    if (z < row[x]) row[x] = z;
+  }
+  fillSpan(t, y, xl, xr, depthFlat_, depthFlat_);
 }
 
 // split one gouraud span at cel band-threshold crossings into flat
@@ -783,20 +857,17 @@ void TD_Renderer::celFillSpan(TD_RenderTarget &t, int y, float xl, float xr, flo
 // the band, so nothing visible is ever lost. the per-pixel bounds funnel
 // here is the one per-pixel check left in the pipeline (spans are clipped
 // by construction).
-void TD_Renderer::drawLineShade(TD_RenderTarget &t, float x0, float y0, float x1, float y1,
-                                float shade) {
-  if (!(isfinite(x0) && isfinite(y0) && isfinite(x1) && isfinite(y1))) return;
-  const float bx = (float)TD_GUARD_BAND * (float)tw_;
-  const float by = (float)TD_GUARD_BAND * (float)th_;
-  const float dxf = x1 - x0, dyf = y1 - y0;
-  // Liang-Barsky: tighten [t0,t1] against each band edge; p is the segment's
-  // speed toward the edge, q the start point's signed clearance.
+// Liang-Barsky against the guard band: tightens [t0, t1] along the segment
+// from (x0, y0) with direction (dxf, dyf); p is the segment's speed toward
+// each band edge, q the start point's signed clearance. false when the
+// segment never enters the band.
+static bool clipToBand(float x0, float y0, float dxf, float dyf, float bx, float by, float &t0,
+                       float &t1) {
   const float p[4] = {-dxf, dxf, -dyf, dyf};
   const float q[4] = {x0 + bx, bx - x0, y0 + by, by - y0};
-  float t0 = 0.0f, t1 = 1.0f;
   for (int k = 0; k < 4; ++k) {
     if (p[k] == 0.0f) {
-      if (q[k] < 0.0f) return;  // parallel to this edge and fully outside
+      if (q[k] < 0.0f) return false;  // parallel to this edge and fully outside
       continue;
     }
     float r = q[k] / p[k];
@@ -806,7 +877,17 @@ void TD_Renderer::drawLineShade(TD_RenderTarget &t, float x0, float y0, float x1
       if (r < t1) t1 = r;  // leaving the band
     }
   }
-  if (t0 > t1) return;  // the segment never enters the band
+  return t0 <= t1;
+}
+
+void TD_Renderer::drawLineShade(TD_RenderTarget &t, float x0, float y0, float x1, float y1,
+                                float shade) {
+  if (!(isfinite(x0) && isfinite(y0) && isfinite(x1) && isfinite(y1))) return;
+  const float bx = (float)TD_GUARD_BAND * (float)tw_;
+  const float by = (float)TD_GUARD_BAND * (float)th_;
+  const float dxf = x1 - x0, dyf = y1 - y0;
+  float t0 = 0.0f, t1 = 1.0f;
+  if (!clipToBand(x0, y0, dxf, dyf, bx, by, t0, t1)) return;
   if (t1 < 1.0f) {      // clip the far endpoint first: it derives from x0/y0
     x1 = x0 + t1 * dxf;
     y1 = y0 + t1 * dyf;
@@ -837,6 +918,76 @@ void TD_Renderer::drawLineShade(TD_RenderTarget &t, float x0, float y0, float x1
   }
 }
 
+// the outline ink pixel test: the edge's depth against the nearest fill at
+// the pixel or at one of its four neighbors, within tol. a line and the
+// pixel-center fills around it disagree by up to about a pixel, and on a
+// fine mesh the pixel center can belong to a face several facets in, so
+// the test looks one pixel across the line too: at a silhouette that
+// neighbor is uncovered (FLT_MAX, always passes), across a crease it is
+// the face on the other side at about the same depth. a hidden line's
+// pixels and their neighbors all sit under the occluder, except within one
+// pixel of the occluder's own contour.
+static inline bool inkVisible(const float *depth, int tw, int th, int x, int y, float z,
+                              float tol) {
+  const float *row = depth + (uint32_t)y * (uint32_t)tw;
+  if (z <= row[x] + tol) return true;
+  if (x > 0 && z <= row[x - 1] + tol) return true;
+  if (x + 1 < tw && z <= row[x + 1] + tol) return true;
+  if (y > 0 && z <= row[x - tw] + tol) return true;
+  if (y + 1 < th && z <= row[x + tw] + tol) return true;
+  return false;
+}
+
+// the outline ink line: drawLineShade's clip and walk with view depth
+// interpolated along the segment, each pixel plotted at 2.0 only where
+// inkVisible passes it.
+void TD_Renderer::drawLineDepth(TD_RenderTarget &t, float x0, float y0, float z0, float x1,
+                                float y1, float z1, float tol) {
+  if (!(isfinite(x0) && isfinite(y0) && isfinite(x1) && isfinite(y1))) return;
+  const float bx = (float)TD_GUARD_BAND * (float)tw_;
+  const float by = (float)TD_GUARD_BAND * (float)th_;
+  const float dxf = x1 - x0, dyf = y1 - y0, dzf = z1 - z0;
+  float t0 = 0.0f, t1 = 1.0f;
+  if (!clipToBand(x0, y0, dxf, dyf, bx, by, t0, t1)) return;
+  if (t1 < 1.0f) {
+    x1 = x0 + t1 * dxf;
+    y1 = y0 + t1 * dyf;
+    z1 = z0 + t1 * dzf;
+  }
+  if (t0 > 0.0f) {
+    x0 = x0 + t0 * dxf;
+    y0 = y0 + t0 * dyf;
+    z0 = z0 + t0 * dzf;
+  }
+
+  int ix0 = (int)floorf(x0), iy0 = (int)floorf(y0);
+  int ix1 = (int)floorf(x1), iy1 = (int)floorf(y1);
+  int dx = abs(ix1 - ix0), sx = ix0 < ix1 ? 1 : -1;
+  int dy = -abs(iy1 - iy0), sy = iy0 < iy1 ? 1 : -1;
+  int err = dx + dy;
+  // the walk advances its major axis once per iteration, so depth steps by
+  // the segment's depth span over that many iterations.
+  const int steps = dx > -dy ? dx : -dy;
+  const float zstep = steps > 0 ? (z1 - z0) / (float)steps : 0.0f;
+  float z = z0;
+  for (;;) {
+    if ((unsigned)ix0 < (unsigned)tw_ && (unsigned)iy0 < (unsigned)th_ &&
+        inkVisible(depth_, tw_, th_, ix0, iy0, z, tol))
+      t.plotShade((int16_t)ix0, (int16_t)iy0, 2.0f);
+    if (ix0 == ix1 && iy0 == iy1) break;
+    int e2 = 2 * err;
+    if (e2 >= dy) {
+      err += dy;
+      ix0 += sx;
+    }
+    if (e2 <= dx) {
+      err += dx;
+      iy0 += sy;
+    }
+    z += zstep;
+  }
+}
+
 // outline a face's original polygon loop — true edges, never fan diagonals —
 // through the shared vertex buffers at the object's offset.
 void TD_Renderer::outlineLoop(TD_RenderTarget &t, const ObjFrame &of, uint16_t loopStart,
@@ -850,13 +1001,17 @@ void TD_Renderer::outlineLoop(TD_RenderTarget &t, const ObjFrame &of, uint16_t l
   }
 }
 
-// TD_OUTLINE's ink pass for one front face: each loop edge draws at 2.0 iff
-// it is a boundary edge, a crease edge (baked flags), or a silhouette edge —
-// the face across it is not known front-facing this frame (a back neighbor,
-// or UNKNOWN for a near-skipped one, which isn't drawn and so makes this
-// edge the boundary of drawn geometry). a crease between two front faces
-// draws once per face — idempotent at 2.0, and the nearer re-ink is
-// protective under the painter; both-back and hidden crease edges are never
+// TD_OUTLINE's ink pass for one front face, run after every fill of the
+// frame has landed: each loop edge draws at 2.0 iff it is a boundary edge,
+// a crease edge (baked flags), or a silhouette edge — the face across it is
+// not known front-facing this frame (a back neighbor, or UNKNOWN for a
+// near-skipped one, which isn't drawn and so makes this edge the boundary of
+// drawn geometry). every pixel is depth-tested against the frame's fills
+// (inkVisible) with a tolerance scaled by the face's steepest depth slope
+// per screen pixel, so a fill's pixel-center sampling around the line never
+// hides it while a real occluder in front still does. a crease between two
+// front faces draws once per
+// face, idempotent at 2.0; both-back and hidden crease edges are never
 // visited because back faces never reach the draw loop.
 void TD_Renderer::outlineClassifiedLoop(TD_RenderTarget &t, const ObjFrame &of, uint16_t face) {
   const TD_Mesh &msh = *of.mesh;
@@ -864,6 +1019,18 @@ void TD_Renderer::outlineClassifiedLoop(TD_RenderTarget &t, const ObjFrame &of, 
   if (!tab || tab->nloop != msh.faceVertCount) return;  // prepare builds these
   const uint32_t vb = of.vertBase;
   const uint16_t loopStart = msh.faces[face][2], loopCount = msh.faces[face][3];
+  float slope = 0.0f;
+  for (uint16_t k = 0; k < loopCount; ++k) {
+    uint32_t i = vb + msh.faceVerts[loopStart + k];
+    uint32_t j = vb + msh.faceVerts[loopStart + (uint16_t)((k + 1) % loopCount)];
+    float ex = sx_[j] - sx_[i], ey = sy_[j] - sy_[i];
+    float len = sqrtf(ex * ex + ey * ey);
+    if (len < 1.0f) len = 1.0f;  // a sub-pixel edge counts as one pixel wide
+    float s = fabsf(sz_[j] - sz_[i]) / len;
+    if (s > slope) slope = s;
+  }
+  // a flat face has no slope; the relative term absorbs interpolation noise
+  const float tol = TD_OUTLINE_DEPTH_TOL_PX * slope + fabsf(faceZ_[of.faceBase + face]) * 1e-5f;
   for (uint16_t k = 0; k < loopCount; ++k) {
     const uint16_t slot = (uint16_t)(loopStart + k);
     bool ink = tab->flags[slot] != 0;  // crease or boundary
@@ -874,6 +1041,6 @@ void TD_Renderer::outlineClassifiedLoop(TD_RenderTarget &t, const ObjFrame &of, 
     if (!ink) continue;
     uint32_t i = vb + msh.faceVerts[slot];
     uint32_t j = vb + msh.faceVerts[loopStart + (uint16_t)((k + 1) % loopCount)];
-    drawLineShade(t, sx_[i], sy_[i], sx_[j], sy_[j], 2.0f);
+    drawLineDepth(t, sx_[i], sy_[i], sz_[i], sx_[j], sy_[j], sz_[j], tol);
   }
 }

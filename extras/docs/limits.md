@@ -131,10 +131,15 @@ plus one list pointer per light:
   source of such quads. Near-skipped neighbors ink deterministically (the
   unknown face is not drawn, so the edge is the boundary of drawn
   geometry); that edge can flicker as faces graze `setNearSkip`.
-- **Hidden-line removal inherits the painter envelope verbatim:**
-  interpenetrating objects and big-face-vs-small-object mis-sorts erase or
-  reveal exactly the lines the fills mis-sort. Intersection curves between
-  objects are not mesh edges and are never drawn.
+- **Hidden-line removal is a per-pixel depth test against the frame's own
+  fills**, independent of the painter order: an ink pixel draws where the
+  edge's depth is within `TD_OUTLINE_DEPTH_TOL_PX` pixels' worth of its
+  face's steepest depth slope of the nearest fill at that pixel or one of
+  its four neighbors. The envelope: a hidden line can poke one pixel past
+  an occluder's contour where it meets it from behind, and an edge of a
+  face steeper than the tolerance covers can hide behind a neighbor's fill.
+  Intersection curves between objects are not mesh edges and are never
+  drawn.
 - **Under `TD_OUTLINE` the dither method cannot affect the frame** — only
   the endpoint shades 0.0/2.0 cross the seam, and every method realizes
   them identically. A sketch that only ever renders outline mode can drop

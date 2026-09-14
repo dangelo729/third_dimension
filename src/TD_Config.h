@@ -51,4 +51,12 @@
 // crease flags are baked at table build.
 #define TD_OUTLINE_CREASE_DEFAULT 1.04719755f
 
+// TD_OUTLINE ink depth tolerance, in screen pixels: an ink pixel is drawn
+// where its edge's view depth is within this many pixels' worth of the
+// face's steepest depth slope of the nearest fill stored at that pixel or
+// one of its four neighbors. a bresenham line and the pixel-center fills
+// around it disagree by up to about a pixel, so this keeps the faces beside
+// a line from hiding it while a real occluder in front still does.
+#define TD_OUTLINE_DEPTH_TOL_PX 1.5f
+
 #endif  // TD_CONFIG_H
