@@ -2997,15 +2997,17 @@ function syncToolButtons() {
   brushPanel.style.display = tool === "mold" ? "" : "none";
 }
 
-// brush controls: log-scaled sliders (fine control at the small end) with a
-// live value readout, shown only while the mold tool is active
+// brush controls: log-scaled sliders (fine control at the small end, a
+// thousand positions across the range) with a live value readout, shown
+// only while the mold tool is active
 const brushPanel = document.createElement("div");
 brushPanel.id = "brush";
 brushPanel.style.display = "none";
 $("tools").appendChild(brushPanel);
 
 const BRUSH_SIZE_RANGE = [0.02, 2];
-const BRUSH_STRENGTH_RANGE = [0.005, 0.5];
+const BRUSH_STRENGTH_RANGE = [0.0005, 0.5];
+const BRUSH_SLIDER_STEPS = 1000;
 
 function brushSlider(labelText, range, get, set) {
   const [min, max] = range;
@@ -3015,15 +3017,15 @@ function brushSlider(labelText, range, get, set) {
   const inp = document.createElement("input");
   inp.type = "range";
   inp.min = "0";
-  inp.max = "100";
+  inp.max = String(BRUSH_SLIDER_STEPS);
   inp.step = "1";
   const sync = () => {
-    label.textContent = `${labelText} ${fmtNum(get(), 2)}`;
-    inp.value = String(Math.round(100 * Math.log(get() / min) / Math.log(max / min)));
+    label.textContent = `${labelText} ${fmtNum(get(), 4)}`;
+    inp.value = String(Math.round(BRUSH_SLIDER_STEPS * Math.log(get() / min) / Math.log(max / min)));
   };
   inp.addEventListener("input", () => {
-    set(min * Math.pow(max / min, parseFloat(inp.value) / 100));
-    label.textContent = `${labelText} ${fmtNum(get(), 2)}`;
+    set(min * Math.pow(max / min, parseFloat(inp.value) / BRUSH_SLIDER_STEPS));
+    label.textContent = `${labelText} ${fmtNum(get(), 4)}`;
     invalidate();
   });
   inp.addEventListener("change", () => inp.blur());
