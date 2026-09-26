@@ -63,7 +63,7 @@ body {
 #brush { grid-column: 1 / -1; }
 #brush .brow { padding: 3px 0 1px; }
 #brush .brow label { display: block; padding-bottom: 1px; }
-#brush input[type="range"] {
+#brush input[type="range"], #numpanel input[type="range"] {
   -webkit-appearance: none;
   appearance: none;
   display: block;
@@ -76,7 +76,8 @@ body {
   outline: none;
   padding: 0;
 }
-#brush input[type="range"]::-webkit-slider-thumb {
+#brush input[type="range"]::-webkit-slider-thumb,
+#numpanel input[type="range"]::-webkit-slider-thumb {
   -webkit-appearance: none;
   appearance: none;
   width: 11px;
@@ -87,7 +88,8 @@ body {
   box-sizing: border-box;
   cursor: pointer;
 }
-#brush input[type="range"]::-moz-range-thumb {
+#brush input[type="range"]::-moz-range-thumb,
+#numpanel input[type="range"]::-moz-range-thumb {
   width: 11px;
   height: 11px;
   border-radius: 50%;
@@ -128,6 +130,8 @@ button.armed { background: var(--secondary); font-weight: bold; }
 }
 #numpanel .nptriple input { width: 33%; }
 #numpanel .npsect { font-weight: bold; padding: 4px 0 1px; }
+#numpanel button:disabled { opacity: 0.45; cursor: default; background: var(--primary); }
+#numpanel input[type="range"]:disabled { opacity: 0.45; }
 
 /* main area: top strip over the four panels */
 #main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
@@ -140,6 +144,8 @@ button.armed { background: var(--secondary); font-weight: bold; }
   flex-wrap: wrap;
 }
 #strip .sep { width: 1px; align-self: stretch; background: var(--secondary); margin: 0 4px; }
+#lmesh { display: flex; align-items: center; gap: 3px; font-size: 12px; padding: 0 4px; cursor: pointer; user-select: none; }
+#lmesh input { accent-color: var(--secondary); margin: 0; cursor: pointer; }
 #budget { margin-left: auto; padding-left: 8px; white-space: nowrap; }
 #budget.hot { color: var(--secondary); font-weight: bold; }
 
@@ -215,6 +221,7 @@ button.armed { background: var(--secondary); font-weight: bold; }
       <button id="bmode">shaded</button>
       <button id="bview" title="toggle between full editing resolution and the decimated export result">edit view</button>
       <button id="bsnap">snap on</button>
+      <label id="lmesh" title="show the selected part's whole mesh (unchecked: its outline only)"><input type="checkbox" id="cmesh" checked> show mesh</label>
       <span id="budget"></span>
     </div>
     <div id="panels">
@@ -781,6 +788,16 @@ function validateProject(p) {
             errs.push(`${at}: bad mold dab ${j + 1} (need at [x,y,z], r > 0, finite s)`);
         });
     }
+    if (part.irregular !== undefined) {
+      const g = part.irregular;
+      if (!g || typeof g !== "object" ||
+          !Number.isFinite(g.amount) || !(g.amount > 0) || !(g.amount <= IRREGULAR_MAX) ||
+          !Number.isInteger(g.seed) || g.seed < 0 || g.seed > 0xFFFFFFFF ||
+          (g.density !== undefined && !(Number.isFinite(g.density) &&
+           g.density >= IRREGULAR_DENSITY[0] && g.density <= IRREGULAR_DENSITY[1])))
+        errs.push(`${at}: bad irregular block (expected { amount: 0 < a <= ${IRREGULAR_MAX}, ` +
+                  `density: ${IRREGULAR_DENSITY[0]}..${IRREGULAR_DENSITY[1]}, seed: uint32 })`);
+    }
     if (part.decimate !== undefined) {
       if (!part.decimate || typeof part.decimate !== "object" ||
           !Number.isFinite(part.decimate.target) || !(part.decimate.target >= 4) ||
@@ -792,8 +809,8 @@ function validateProject(p) {
 }
 
 // serialize with a stable field order so project diffs stay minimal; the
-// mold and decimate blocks are emitted only when active, so plain projects
-// serialize exactly as before.
+// mold, irregular, and decimate blocks are emitted only when active, so
+// plain projects serialize exactly as before.
 function serializeProject(p) {
   const parts = p.parts.map((part) => {
     const out = {
@@ -802,6 +819,8 @@ function serializeProject(p) {
     };
     const dabs = moldedDabs(part);
     if (dabs) out.mold = { dabs: dabs.map((d) => ({ at: d.at, r: d.r, s: d.s })) };
+    const irr = irregularOf(part);
+    if (irr) out.irregular = { amount: irr.amount, density: irregularDensity(irr), seed: irr.seed };
     const target = decimateTarget(part);
     if (target) out.decimate = { target };
     return out;
@@ -863,17 +882,20 @@ function parseProjectText(text) {
 function partWorldGeometry(part, forExport) {
   let mesh = generate(part.type, part.params);
   if (mesh.nverts === 0) return null;
-  // molding: keep the pre-displacement positions (new dabs anchor to the
-  // base surface — see raycastMoldSurface), displace along smooth welded
-  // normals, then swap the stale analytic normals for converter-style
-  // creased ones. generate() built fresh arrays, so the in-place edits
-  // touch nothing shared. Decimation runs after molding — QEM must see the
-  // sculpted shape to know where detail lives — and replaces the analytic
-  // normals the same way.
+  // molding and irregularize: keep the pre-displacement positions (new
+  // dabs anchor to the base surface — see raycastMoldSurface), displace
+  // along smooth welded normals, then swap the stale analytic normals for
+  // converter-style creased ones. generate() built fresh arrays, so the
+  // in-place edits touch nothing shared. Decimation runs after both — QEM
+  // must see the sculpted shape to know where detail lives — and replaces
+  // the analytic normals the same way.
   const dabs = moldedDabs(part);
-  if (dabs) {
+  const irr = irregularOf(part);
+  if (dabs || irr) {
     mesh.baseVerts = mesh.verts.map((v) => v.slice());
-    applyMold(mesh, dabs, moldTopologyOf(part, mesh));
+    const topo = moldTopologyOf(part, mesh);
+    if (dabs) applyMold(mesh, dabs, topo);
+    if (irr) applyIrregular(mesh, irr, topo);
   }
   const target = forExport ? decimateTarget(part) : null;
   let decimated = false;
@@ -884,7 +906,7 @@ function partWorldGeometry(part, forExport) {
       decimated = true;
     }
   }
-  const resmoothed = !!dabs || decimated;
+  const resmoothed = !!dabs || !!irr || decimated;
   if (resmoothed) recomputeCreasedNormals(mesh);
   const R = eulerXYZ(part.rotation[0], part.rotation[1], part.rotation[2]);
   const [sx, sy, sz] = part.scale;
@@ -962,6 +984,7 @@ function posKeyOf(v) { return v[0] + "," + v[1] + "," + v[2]; }
 // fan-triangle sums — the standard smooth normal, used only as the
 // displacement direction; shading normals are recomputed after) plus a
 // uniform grid over the base verts, so a dab visits only the verts near it.
+// irregularize displaces along the same normals.
 function buildMoldTopology(mesh) {
   const acc = new Map();
   for (const t of mesh.tris) {
@@ -1156,6 +1179,126 @@ function recomputeCreasedNormals(mesh) {
 function moldedDabs(part) {
   return part.mold && Array.isArray(part.mold.dabs) && part.mold.dabs.length
       ? part.mold.dabs : null;
+}
+
+// ---- irregularize (seeded noise field -> derived displacement) ------------
+// a part's optional irregular block { amount, density, seed } wobbles its
+// whole surface in and out along the same smooth welded normals molding
+// uses: every vertex samples one seeded 3d gradient-noise field at its base
+// local position, so neighbors move together (broad lumps, not jitter),
+// verts sharing a position move identically (closed meshes stay closed),
+// and the lumps re-evaluate onto any tessellation. amount is the typical
+// peak displacement as a fraction of the generator's bounding radius (a
+// given seed usually lands within about 0.8x to 1.25x of it); density
+// scales how many lumps fit across that same radius (1 = the base size,
+// 2 = twice as many lumps per unit length, each half as wide), so the look
+// does not depend on part size. high densities need a fine tessellation to
+// resolve. integer hashing and + - * floor only (no sin-based hashing), so
+// every engine computes the same bits. the field is frozen: saved projects
+// store only amount, density, and seed, so any change here reshapes every
+// saved irregularized model.
+
+const IRREGULAR_MAX = 0.5;   // amount cap: half the part's radius
+const IRREGULAR_FREQ = 1.2;  // noise lattice cells per bounding radius at density 1
+// density range: below 0.5 the field is nearly linear across the part,
+// and a linear push along the normals only translates the shape
+const IRREGULAR_DENSITY = [0.5, 8];
+
+// typical peak of the raw noise over a surface at each density knot: the
+// median over 300 seeds of the max over 20000 points of a sphere. more
+// lumps sample more of the field's extremes, so the peak rises with
+// density; dividing it out keeps amount the typical peak at any density.
+// interpolated linearly in density (+ - * / only, so every engine agrees)
+const IRREGULAR_PEAK = [
+  [0.5, 0.607], [1, 0.693], [2, 0.785], [4, 0.833], [8, 0.880],
+];
+function irregularPeak(density) {
+  const K = IRREGULAR_PEAK;
+  if (density <= K[0][0]) return K[0][1];
+  for (let i = 1; i < K.length; ++i)
+    if (density <= K[i][0]) {
+      const t = (density - K[i - 1][0]) / (K[i][0] - K[i - 1][0]);
+      return K[i - 1][1] + t * (K[i][1] - K[i - 1][1]);
+    }
+  return K[K.length - 1][1];
+}
+
+function irregularOf(part) {
+  const g = part.irregular;
+  return g && typeof g === "object" && Number.isFinite(g.amount) && g.amount > 0 &&
+         Number.isInteger(g.seed) &&
+         (g.density === undefined || (Number.isFinite(g.density) && g.density > 0)) ? g : null;
+}
+
+// density defaults to 1 when a block omits it
+function irregularDensity(g) { return g.density === undefined ? 1 : g.density; }
+
+// seeded permutation table (fisher-yates driven by mulberry32) plus a
+// lattice offset in [0, 256), so the part origin never sits on a lattice
+// point where the noise is pinned to zero
+function irregularField(seed) {
+  let s = seed >>> 0;
+  const next = () => {
+    s = (s + 0x6D2B79F5) >>> 0;
+    let t = s;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return (t ^ (t >>> 14)) >>> 0;
+  };
+  const perm = new Uint8Array(512);
+  for (let i = 0; i < 256; ++i) perm[i] = i;
+  for (let i = 255; i > 0; --i) {
+    const j = next() % (i + 1);
+    const t = perm[i];
+    perm[i] = perm[j];
+    perm[j] = t;
+  }
+  perm.copyWithin(256, 0, 256);
+  return { perm, off: [next() / 16777216, next() / 16777216, next() / 16777216] };
+}
+
+// improved perlin noise: quintic fade, twelve edge gradients, about [-1, 1]
+function fade5(t) { return t * t * t * (t * (t * 6 - 15) + 10); }
+function lerp1(t, a, b) { return a + t * (b - a); }
+function grad3(h, x, y, z) {
+  const u = h < 8 ? x : y;
+  const v = h < 4 ? y : h === 12 || h === 14 ? x : z;
+  return ((h & 1) ? -u : u) + ((h & 2) ? -v : v);
+}
+function gradNoise3(perm, x, y, z) {
+  const fx = Math.floor(x), fy = Math.floor(y), fz = Math.floor(z);
+  const X = fx & 255, Y = fy & 255, Z = fz & 255;
+  x -= fx;
+  y -= fy;
+  z -= fz;
+  const u = fade5(x), v = fade5(y), w = fade5(z);
+  const A = perm[X] + Y, AA = perm[A] + Z, AB = perm[A + 1] + Z;
+  const B = perm[X + 1] + Y, BA = perm[B] + Z, BB = perm[B + 1] + Z;
+  return lerp1(w,
+    lerp1(v, lerp1(u, grad3(perm[AA] & 15, x, y, z), grad3(perm[BA] & 15, x - 1, y, z)),
+             lerp1(u, grad3(perm[AB] & 15, x, y - 1, z), grad3(perm[BB] & 15, x - 1, y - 1, z))),
+    lerp1(v, lerp1(u, grad3(perm[AA + 1] & 15, x, y, z - 1), grad3(perm[BA + 1] & 15, x - 1, y, z - 1)),
+             lerp1(u, grad3(perm[AB + 1] & 15, x, y - 1, z - 1), grad3(perm[BB + 1] & 15, x - 1, y - 1, z - 1))));
+}
+
+// displace a freshly generated mesh's verts in place along the topology's
+// smooth normals by amount * radius * noise(base position * density),
+// normalized by the density's typical peak. topo defaults to a fresh
+// buildMoldTopology(mesh).
+function applyIrregular(mesh, irr, topo) {
+  const { P, N } = topo || buildMoldTopology(mesh);
+  const { perm, off } = irregularField(irr.seed);
+  const density = irregularDensity(irr);
+  const k = IRREGULAR_FREQ * density / mesh.boundRadius;
+  const amp = irr.amount * mesh.boundRadius / irregularPeak(density);
+  for (let i = 0; i < mesh.nverts; ++i) {
+    const d = amp * gradNoise3(perm, P[3 * i] * k + off[0], P[3 * i + 1] * k + off[1],
+                               P[3 * i + 2] * k + off[2]);
+    const v = mesh.verts[i];
+    v[0] += N[3 * i] * d;
+    v[1] += N[3 * i + 1] * d;
+    v[2] += N[3 * i + 2] * d;
+  }
 }
 
 // ---- decimation (export-stage QEM edge collapse) --------------------------
@@ -1587,8 +1730,8 @@ const CAP_TRIS = 21845;  // 3*ntris (the cnorm table) must fit uint16
 // export counts: what bake() will actually emit. For a decimated part that
 // means running the real collapse (on the molded shape — QEM keeps detail
 // where the sculpt put it, so the counts depend on it); estimates would
-// drift from the exact caps the format enforces. Mold alone never changes
-// counts, so undecimated parts stay a bare generate().
+// drift from the exact caps the format enforces. Mold and irregularize
+// never change counts, so undecimated parts stay a bare generate().
 function countsOf(parts) {
   let nv = 0, nt = 0, nf = 0, nloop = 0;
   for (const part of parts) {
@@ -1596,7 +1739,12 @@ function countsOf(parts) {
     const target = decimateTarget(part);
     if (target) {
       const dabs = moldedDabs(part);
-      if (dabs) applyMold(m, dabs, moldTopologyOf(part, m));
+      const irr = irregularOf(part);
+      if (dabs || irr) {
+        const topo = moldTopologyOf(part, m);
+        if (dabs) applyMold(m, dabs, topo);
+        if (irr) applyIrregular(m, irr, topo);
+      }
       const dec = decimateMesh(m, target, part.scale);
       if (dec) m = dec;
     }
@@ -1726,6 +1874,8 @@ function bake(project) {
       return { ok: false, error: `part ${r.part.id} (${r.part.type}) has non-positive signed volume — ` +
                (moldedDabs(r.part)
                  ? "molding has pushed it inside-out (undo the deepest dents or soften the brush)"
+                 : irregularOf(r.part)
+                 ? "irregularize has pushed it inside-out (lower its amount)"
                  : decimateTarget(r.part)
                  ? "decimation collapsed it degenerate (raise the part's export-tris target)"
                  : "winding is broken (this is a bug; please report the project JSON)") };
@@ -1967,6 +2117,7 @@ return {
   // geometry / preview / bake
   partWorldGeometry, partWorldAABB, overlapPairs,
   moldFalloff, applyMold, recomputeCreasedNormals, moldedDabs,
+  irregularOf, irregularDensity, applyIrregular, IRREGULAR_MAX, IRREGULAR_DENSITY,
   raycastMoldSurface, decimateTarget, decimateMesh,
   AMBIENT, LIGHT_DIR, shadeOf,
   validateMeshJS, signedVolume, countsOf, budgetOf, CAP_U16, CAP_TRIS,
@@ -2035,6 +2186,7 @@ let project = C.newProject();
 let selectedId = null;
 let armedType = null;          // primitive type armed for placement
 let shadedMode = true;         // wireframe <-> shaded toggle
+let showMesh = true;           // selected part: whole mesh, or outline only
 let tool = "select";           // "select" | "mold" (the tools section)
 let brushSize = 0.3;           // mold brush radius, world units
 let brushStrength = 0.05;      // mold brush center displacement, world units
@@ -2386,6 +2538,66 @@ function strokeLoop(ctx, pp, f) {
   ctx.stroke();
 }
 
+// the face across each loop edge: nbr[loopStart + k] is the face sharing
+// edge k -> k+1, or -1 on an open rim or a non-manifold edge. built once
+// per geometry entry, for the selection outline.
+function loopNeighbors(entry) {
+  if (entry.nbr) return entry.nbr;
+  const mesh = entry.geo.mesh;
+  const nbr = new Int32Array(mesh.faceVertCount).fill(-1);
+  const slotFace = new Int32Array(mesh.faceVertCount);
+  const pending = new Map();  // edge key -> the first loop slot using it, -2 once paired
+  for (let f = 0; f < mesh.nfaces; ++f) {
+    const loopStart = mesh.faces[f][2], loopCount = mesh.faces[f][3];
+    for (let k = 0; k < loopCount; ++k) {
+      const slot = loopStart + k;
+      slotFace[slot] = f;
+      const a = mesh.faceVerts[slot], b = mesh.faceVerts[loopStart + (k + 1) % loopCount];
+      if (a === b) continue;
+      const key = a < b ? a * mesh.nverts + b : b * mesh.nverts + a;
+      const twin = pending.get(key);
+      if (twin === undefined) {
+        pending.set(key, slot);
+      } else if (twin >= 0) {
+        nbr[slot] = slotFace[twin];
+        nbr[twin] = f;
+        pending.set(key, -2);
+      }
+    }
+  }
+  entry.nbr = nbr;
+  return nbr;
+}
+
+function faceClipped(pp, f) {
+  if (!pp.clip) return false;
+  const mesh = pp.entry.geo.mesh;
+  const loopStart = mesh.faces[f][2], loopCount = mesh.faces[f][3];
+  for (let k = 0; k < loopCount; ++k)
+    if (pp.clip[mesh.faceVerts[loopStart + k]]) return true;
+  return false;
+}
+
+// outline-only selection: the loop edges of front face f whose neighbor
+// faces away, is near-clipped, or is missing (an open rim)
+function strokeSilhouette(ctx, pp, f) {
+  const mesh = pp.entry.geo.mesh;
+  const nbr = loopNeighbors(pp.entry);
+  const loopStart = mesh.faces[f][2], loopCount = mesh.faces[f][3];
+  ctx.beginPath();
+  for (let k = 0; k < loopCount; ++k) {
+    const g = nbr[loopStart + k];
+    if (g >= 0 && !faceClipped(pp, g) && faceAnyFront(pp, g)) continue;
+    const a = mesh.faceVerts[loopStart + k];
+    const b = mesh.faceVerts[loopStart + (k + 1) % loopCount];
+    ctx.moveTo(pp.sx[a], pp.sy[a]);
+    ctx.lineTo(pp.sx[b], pp.sy[b]);
+  }
+  ctx.lineCap = "round";  // edges meet at vertices without notches
+  ctx.stroke();
+  ctx.lineCap = "butt";
+}
+
 function renderPanel(p) {
   if (!p.w || !p.h) return;
   const ctx = p.ctx;
@@ -2436,14 +2648,27 @@ function renderPanel(p) {
       }
       if (isSelected) {
         ctx.strokeStyle = COL.secondary;
-        ctx.lineWidth = 1.5;
-        strokeLoop(ctx, pp, f);
+        if (showMesh) {
+          ctx.lineWidth = 1.5;
+          strokeLoop(ctx, pp, f);
+        } else {
+          ctx.lineWidth = 2;
+          strokeSilhouette(ctx, pp, f);
+        }
       }
     } else {
-      // wireframe: front-facing true polygon loops only — no fan diagonals
-      ctx.strokeStyle = isSelected ? COL.secondary : COL.ink;
-      ctx.lineWidth = isSelected ? 1.5 : 1;
+      // wireframe: front-facing true polygon loops only — no fan diagonals.
+      // outline-only selection draws the part's loops like any other part's
+      // and its outline on top
+      const meshHighlight = isSelected && showMesh;
+      ctx.strokeStyle = meshHighlight ? COL.secondary : COL.ink;
+      ctx.lineWidth = meshHighlight ? 1.5 : 1;
       strokeLoop(ctx, pp, f);
+      if (isSelected && !showMesh) {
+        ctx.strokeStyle = COL.secondary;
+        ctx.lineWidth = 2;
+        strokeSilhouette(ctx, pp, f);
+      }
     }
   }
 
@@ -2989,6 +3214,13 @@ $("bsnap").addEventListener("click", () => {
   project.snap = !project.snap;
   syncStripButtons();
 });
+// a live view preference like shadedMode (never undo state). blur so
+// space and delete keep reaching the global shortcuts.
+$("cmesh").addEventListener("change", () => {
+  showMesh = $("cmesh").checked;
+  $("cmesh").blur();
+  invalidate();
+});
 
 // space must never re-trigger the last-clicked button
 document.addEventListener("click", (e) => {
@@ -3125,13 +3357,18 @@ function syncBrushInputs() {
 
 const np = $("numpanel");
 // the built panel: the part object it was built for plus every input with
-// its value getter, so commits and drag-ends refresh values in place — a
-// full DOM rebuild would destroy the input a Tab keypress is moving into
-let npState = null;  // { part, entries: [{ input, get }] }
+// its value getter (or its own sync), so commits and drag-ends refresh
+// values in place — a full DOM rebuild would destroy the input a Tab
+// keypress is moving into
+let npState = null;  // { part, entries: [{ input, get } | { sync }] }
 
 function fmtNum(v, digits) {
   return String(parseFloat(v.toFixed(digits === undefined ? 4 : digits)));
 }
+
+// irregularize seeds come from here only: the core never reads randomness,
+// so a saved project always rebuilds the same shape
+function randomSeed() { return Math.floor(Math.random() * 0x100000000); }
 
 function numRow(labelText, inputs) {
   const row = document.createElement("div");
@@ -3170,7 +3407,8 @@ function refreshNumeric() {
   // change of identity (select, delete, undo's fresh objects) rebuilds.
   if (npState && part && npState.part === part) {
     for (const en of npState.entries)
-      if (document.activeElement !== en.input) en.input.value = en.get();
+      if (en.sync) en.sync();
+      else if (document.activeElement !== en.input) en.input.value = en.get();
     return;
   }
   npState = null;
@@ -3224,6 +3462,88 @@ function refreshNumeric() {
     return true;
   });
   np.appendChild(numRow("export tris", [decInp]));
+
+  // irregularize: an amount slider in 0.1% steps up to the cap (0 = off)
+  // and a log-scaled density slider. moving amount off 0 rolls a fresh
+  // random seed at density 1; later drags of either slider keep that seed,
+  // so the same lumps grow, shrink, or pack tighter. [reroll] rolls new
+  // lumps at the same settings. one slider gesture is one undo step.
+  const [dLo, dHi] = C.IRREGULAR_DENSITY;
+  const DENSITY_STEPS = 500;
+  const densityAt = (step) =>
+    Math.round(100 * dLo * Math.pow(dHi / dLo, step / DENSITY_STEPS)) / 100;
+  const densityStep = (d) =>
+    Math.round(DENSITY_STEPS * Math.log(d / dLo) / Math.log(dHi / dLo));
+  // the first input of a gesture snapshots for undo and fixes the seed the
+  // gesture writes; release pushes one undo step if anything changed
+  const irrSlider = (max, onInput) => {
+    const el = document.createElement("input");
+    el.type = "range";
+    el.min = "0";
+    el.max = String(max);
+    el.step = "1";
+    let gesture = null;  // { pre, start, seed } while a gesture runs
+    el.addEventListener("input", () => {
+      if (!gesture) {
+        const start = C.irregularOf(part);
+        gesture = { pre: snapshot(), start, seed: start ? start.seed : randomSeed() };
+      }
+      onInput(parseInt(el.value, 10), gesture);
+      touch(part);
+      syncIrr();
+      invalidate();
+    });
+    el.addEventListener("change", () => {
+      const g = gesture;
+      gesture = null;
+      if (g && snapshot() !== g.pre) pushUndo(g.pre);
+      refreshBudget();
+      el.blur();
+    });
+    return el;
+  };
+  const irrHead = document.createElement("div");
+  irrHead.className = "npsect";
+  np.appendChild(irrHead);
+  const amountSlider = irrSlider(Math.round(C.IRREGULAR_MAX * 1000), (v, g) => {
+    const amount = v / 1000;
+    if (amount > 0)
+      part.irregular = { amount, density: g.start ? C.irregularDensity(g.start) : 1, seed: g.seed };
+    else delete part.irregular;
+  });
+  np.appendChild(amountSlider);
+  const densLabel = document.createElement("div");
+  np.appendChild(densLabel);
+  const densSlider = irrSlider(DENSITY_STEPS, (v) => {
+    const cur = C.irregularOf(part);
+    if (cur) part.irregular = { amount: cur.amount, density: densityAt(v), seed: cur.seed };
+  });
+  np.appendChild(densSlider);
+  const reroll = document.createElement("button");
+  reroll.textContent = "reroll";
+  reroll.title = "new random lumps at the same amount and density";
+  np.appendChild(reroll);
+  const syncIrr = () => {
+    const g = C.irregularOf(part);
+    const amount = g ? g.amount : 0, density = g ? C.irregularDensity(g) : 1;
+    irrHead.textContent = `irregularize ${fmtNum(amount * 100, 1)}%`;
+    densLabel.textContent = `density ${fmtNum(density, 2)}×`;
+    if (document.activeElement !== amountSlider) amountSlider.value = String(Math.round(amount * 1000));
+    if (document.activeElement !== densSlider) densSlider.value = String(densityStep(density));
+    densSlider.disabled = !g;
+    reroll.disabled = !g;
+  };
+  entries.push({ sync: syncIrr });
+  syncIrr();
+  reroll.addEventListener("click", () => {
+    const g = C.irregularOf(part);
+    if (!g) return;
+    pushUndo();
+    part.irregular = { amount: g.amount, density: C.irregularDensity(g), seed: randomSeed() };
+    touch(part);
+    refreshBudget();
+    invalidate();
+  });
 
   const triple = (label, get, apply) => {
     sect(label);
@@ -3295,6 +3615,8 @@ function cloneInPlace(part) {
   dup.scale = part.scale.slice();
   const dabs = C.moldedDabs(part);
   if (dabs) dup.mold = { dabs: dabs.map((d) => ({ at: d.at.slice(), r: d.r, s: d.s })) };
+  const irr = C.irregularOf(part);
+  if (irr) dup.irregular = { amount: irr.amount, density: C.irregularDensity(irr), seed: irr.seed };
   const target = C.decimateTarget(part);
   if (target) dup.decimate = { target };
   project.parts.push(dup);
