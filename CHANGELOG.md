@@ -13,6 +13,13 @@ releases may break API; breaks are called out under a "Breaking" heading.
 
 ### Added
 
+- **Headless editor export: `tools/editor_bake.js`.** Runs `tools/editor.html`'s own
+  export — its DOM-free `td-core` script, lifted out of the page: `parseProjectText` →
+  `bake` → `emitHeader` — under the `jsc` shell every Mac ships, or under node. The
+  input is a saved project `.json` or an exported `.h`; `--decimate T1,T2,...` sets each
+  part's decimate target and `--name` the symbol prefix before the bake. Re-baking an
+  exported header with no options reproduces it byte for byte. The header is written
+  only after a clean bake.
 - **Baked outline edge tables: `TD_MeshEdges` + `setOutlineEdges`.** A static mesh's
   `TD_OUTLINE` edge table can be baked offline by `tools/bake_edges.cpp` into a header
   beside the mesh (TD edges format 1, its own `TD_EDGES_FORMAT` handshake), so it lives

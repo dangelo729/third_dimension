@@ -121,6 +121,26 @@ deliberately.
   handshake), so it compiles regardless of include order or whether
   `ThirdDimension.h` is present.
 
+## Exporting from the editor without the page
+
+`tools/editor_bake.js` runs the editor's own export — the page's DOM-free
+core script, lifted out of `editor.html` — so a header can be re-made from a
+script: the input is a saved project `.json` or an exported `.h` (its
+embedded project block), and the output is what the Export button writes.
+Options change the project first, and the change is embedded in the new
+header's project block like any edit:
+
+```sh
+JSC=/System/Library/Frameworks/JavaScriptCore.framework/Versions/A/Helpers/jsc
+$JSC tools/editor_bake.js -- tools/editor.html Model.h -o ModelSmall.h \
+    --decimate 320,40,40 --name model_small    # per-part face targets, in part order
+node tools/editor_bake.js tools/editor.html Model.h -o ModelSmall.h   # same, under node
+```
+
+`--decimate` takes one target per part (`-` keeps a part's own); `--name`
+sets the symbol prefix. Re-baking an exported header with no options
+reproduces it byte for byte.
+
 ## Baking a mesh's outline edge table
 
 Under `TD_OUTLINE` the renderer builds an edge table per mesh at runtime: 3 B per
