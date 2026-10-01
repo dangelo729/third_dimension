@@ -33,6 +33,13 @@ struct TD_OutlineCacheEntry {
   TD_EdgeTable table;
 };
 
+// one baked TD_OUTLINE edge table handed in by setOutlineEdges: the view is
+// copied, its arrays borrowed.
+struct TD_BakedEdgesEntry {
+  const TD_Mesh *mesh;
+  TD_MeshEdges edges;
+};
+
 // facing bits (faceFront_), meaningful only while drawing a TD_OUTLINE frame.
 // UNKNOWN covers faces the record loop never classified (near-skipped, or a
 // decal's slot): the neighbor isn't drawn, so an edge against it inks as the
@@ -52,6 +59,7 @@ TD_Renderer::~TD_Renderer() {
   // working buffers are renderer-owned; releasing here keeps the
   // declare-a-global Arduino idiom leak-free.
   releaseBuffers();
+  free(baked_);
 }
 
 bool TD_Renderer::reserve(uint32_t maxVerts, uint32_t maxFaces, uint16_t maxObjects) {
@@ -201,6 +209,43 @@ void TD_Renderer::invalidateOutline(const TD_Mesh *mesh) {
   }
 }
 
+bool TD_Renderer::setOutlineEdges(const TD_Mesh &mesh, const TD_MeshEdges &edges) {
+  // checked once here so the draw loop can trust every opp entry as a face
+  // index, the way it trusts a validated mesh.
+  if (edges.nverts != mesh.nverts || edges.nfaces != mesh.nfaces ||
+      edges.faceVertCount != mesh.faceVertCount)
+    return false;
+  if (edges.faceVertCount != 0 && (edges.opp == nullptr || edges.flags == nullptr)) return false;
+  for (uint32_t i = 0; i < edges.faceVertCount; ++i)
+    if (edges.opp[i] != TD_EDGE_NONE && edges.opp[i] >= edges.nfaces) return false;
+  for (uint16_t i = 0; i < bakedCount_; ++i) {
+    if (baked_[i].mesh == &mesh) {
+      baked_[i].edges = edges;
+      return true;
+    }
+  }
+  TD_BakedEdgesEntry *p =
+      (TD_BakedEdgesEntry *)realloc(baked_, (size_t)(bakedCount_ + 1) * sizeof(TD_BakedEdgesEntry));
+  if (!p) return false;
+  baked_ = p;
+  baked_[bakedCount_].mesh = &mesh;
+  baked_[bakedCount_].edges = edges;
+  ++bakedCount_;
+  return true;
+}
+
+const TD_MeshEdges *TD_Renderer::bakedEdges(const TD_Mesh &mesh) const {
+  for (uint16_t i = 0; i < bakedCount_; ++i) {
+    const TD_BakedEdgesEntry &b = baked_[i];
+    if (b.mesh != &mesh) continue;
+    if (b.edges.nverts == mesh.nverts && b.edges.nfaces == mesh.nfaces &&
+        b.edges.faceVertCount == mesh.faceVertCount && b.edges.crease == outlineCrease_)
+      return &b.edges;
+    return nullptr;
+  }
+  return nullptr;
+}
+
 const TD_EdgeTable *TD_Renderer::findEdgeTable(const TD_Mesh &mesh) const {
   // linear scan: scenes hold a handful of distinct meshes, and the draw loop
   // memoizes per record run.
@@ -214,6 +259,7 @@ const TD_EdgeTable *TD_Renderer::findEdgeTable(const TD_Mesh &mesh) const {
 }
 
 bool TD_Renderer::ensureEdgeTable(const TD_Mesh &mesh) {
+  if (bakedEdges(mesh)) return true;  // a baked table stands in: nothing to build
   for (uint16_t i = 0; i < outlineCount_; ++i) {
     TD_OutlineCacheEntry &e = outlineCache_[i];
     if (e.mesh != &mesh) continue;
@@ -1076,8 +1122,17 @@ void TD_Renderer::outlineLoop(TD_RenderTarget &t, const ObjFrame &of, uint16_t l
 // visited because back faces never reach the draw loop.
 void TD_Renderer::outlineClassifiedLoop(TD_RenderTarget &t, const ObjFrame &of, uint16_t face) {
   const TD_Mesh &msh = *of.mesh;
-  const TD_EdgeTable *tab = findEdgeTable(msh);
-  if (!tab || tab->nloop != msh.faceVertCount) return;  // prepare builds these
+  const uint16_t *oppTab;
+  const uint8_t *flagTab;
+  if (const TD_MeshEdges *baked = bakedEdges(msh)) {
+    oppTab = baked->opp;
+    flagTab = baked->flags;
+  } else {
+    const TD_EdgeTable *tab = findEdgeTable(msh);
+    if (!tab || tab->nloop != msh.faceVertCount) return;  // prepare builds these
+    oppTab = tab->opp;
+    flagTab = tab->flags;
+  }
   const uint32_t vb = of.vertBase;
   const uint16_t loopStart = msh.faces[face][2], loopCount = msh.faces[face][3];
   float slope = 0.0f;
@@ -1094,9 +1149,9 @@ void TD_Renderer::outlineClassifiedLoop(TD_RenderTarget &t, const ObjFrame &of, 
   const float tol = TD_OUTLINE_DEPTH_TOL_PX * slope + fabsf(faceZ_[of.faceBase + face]) * 1e-5f;
   for (uint16_t k = 0; k < loopCount; ++k) {
     const uint16_t slot = (uint16_t)(loopStart + k);
-    bool ink = tab->flags[slot] != 0;  // crease or boundary
+    bool ink = flagTab[slot] != 0;  // crease or boundary
     if (!ink) {
-      const uint16_t opp = tab->opp[slot];
+      const uint16_t opp = oppTab[slot];
       ink = opp == TD_EDGE_NONE || faceFront_[of.faceBase + opp] != TD_FACING_FRONT;
     }
     if (!ink) continue;

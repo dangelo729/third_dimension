@@ -21,6 +21,7 @@
 #include "TD_Types.h"
 #include "TD_Math.h"
 #include "TD_Mesh.h"
+#include "TD_MeshEdges.h"
 #include "TD_Object.h"
 #include "TD_Camera.h"
 #include "TD_Light.h"

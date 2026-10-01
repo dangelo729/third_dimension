@@ -846,6 +846,85 @@ void runOutlineTests() {
     CHECK(fbHash() == hDefault, "invalidate + lazy rebuild must reproduce the frame");
   }
 
+  // ---- O8b. a baked edge table stands in for the built one ----
+  // the barrel's table, built and copied out the way tools/bake_edges.cpp
+  // writes it, draws the frame the built table draws. a doctored copy (every
+  // slot a crease) reaches pixels, so the ink pass reads the baked table; a
+  // crease it wasn't baked at falls back to the built table, and the baked
+  // crease picks it up again. the registration outlives invalidateOutline
+  // and releaseBuffers, a second call replaces it, and a table that doesn't
+  // fit the mesh is refused, leaving the registration as it was.
+  {
+    TD_Scene built;
+    TD_Object builtObj(barrel_mesh);
+    setupK5(built, builtObj);
+    renderToChecked(built, target, TD_OUTLINE);
+    const uint64_t hBuilt = fbHash();
+    const long litBuilt = stats().count;
+    built.setOutlineCrease(3.0f);
+    renderToChecked(built, target, TD_OUTLINE);
+    const uint64_t hLoose = fbHash();
+
+    const uint16_t n = barrel_mesh.faceVertCount;
+    TD_EdgeTable t;
+    CHECK(t.build(barrel_mesh, TD_OUTLINE_CREASE_DEFAULT), "barrel edge table build failed");
+    uint16_t *opp = (uint16_t *)std::malloc(n * sizeof(uint16_t));
+    uint16_t *badOpp = (uint16_t *)std::malloc(n * sizeof(uint16_t));
+    uint8_t *flags = (uint8_t *)std::malloc(n);
+    uint8_t *allCrease = (uint8_t *)std::malloc(n);
+    std::memcpy(opp, t.opp, n * sizeof(uint16_t));
+    std::memcpy(badOpp, t.opp, n * sizeof(uint16_t));
+    std::memcpy(flags, t.flags, n);
+    std::memset(allCrease, TD_EDGE_CREASE, n);
+    t.release();
+    badOpp[n / 2] = barrel_mesh.nfaces;  // one past the last face
+    const TD_MeshEdges baked = {opp, flags, barrel_mesh.nverts, barrel_mesh.nfaces, n,
+                                TD_OUTLINE_CREASE_DEFAULT};
+    const TD_MeshEdges doctored = {opp, allCrease, barrel_mesh.nverts, barrel_mesh.nfaces, n,
+                                   TD_OUTLINE_CREASE_DEFAULT};
+    const TD_MeshEdges outOfRange = {badOpp, flags, barrel_mesh.nverts, barrel_mesh.nfaces, n,
+                                     TD_OUTLINE_CREASE_DEFAULT};
+    const TD_MeshEdges otherCounts = {opp, flags, barrel_mesh.nverts, barrel_mesh.nfaces,
+                                      (uint16_t)(n - 1), TD_OUTLINE_CREASE_DEFAULT};
+
+    TD_Scene scene2;
+    TD_Object obj(barrel_mesh);
+    setupK5(scene2, obj);
+    CHECK(scene2.setOutlineEdges(barrel_mesh, baked), "a matching baked table must be accepted");
+    CHECK(scene2.prebuildOutline(), "prebuildOutline with a baked table failed");
+    renderToChecked(scene2, target, TD_OUTLINE);
+    CHECK(fbHash() == hBuilt, "the baked table must draw the built table's frame");
+
+    CHECK(scene2.setOutlineEdges(barrel_mesh, doctored), "a second call must replace the table");
+    renderToChecked(scene2, target, TD_OUTLINE);
+    const uint64_t hDoctored = fbHash();
+    CHECK(hDoctored != hBuilt && stats().count > litBuilt,
+          "the ink pass must read the baked table (all-crease flags ink more: %ld vs %ld px)",
+          stats().count, litBuilt);
+
+    scene2.setOutlineCrease(3.0f);  // not the baked crease: the table builds
+    renderToChecked(scene2, target, TD_OUTLINE);
+    CHECK(fbHash() == hLoose, "another crease must fall back to the built table");
+    scene2.setOutlineCrease(TD_OUTLINE_CREASE_DEFAULT);
+    renderToChecked(scene2, target, TD_OUTLINE);
+    CHECK(fbHash() == hDoctored, "the baked crease must pick the baked table up again");
+
+    scene2.renderer().invalidateOutline();
+    scene2.renderer().releaseBuffers();
+    renderToChecked(scene2, target, TD_OUTLINE);
+    CHECK(fbHash() == hDoctored, "the registration must outlive invalidateOutline and releaseBuffers");
+
+    CHECK(!scene2.setOutlineEdges(barrel_mesh, otherCounts), "a table for other counts must be refused");
+    CHECK(!scene2.setOutlineEdges(barrel_mesh, outOfRange), "an out-of-range opp must be refused");
+    renderToChecked(scene2, target, TD_OUTLINE);
+    CHECK(fbHash() == hDoctored, "a refused table must leave the registration as it was");
+
+    std::free(opp);
+    std::free(badOpp);
+    std::free(flags);
+    std::free(allCrease);
+  }
+
   // ---- O9. opt-out identity: outline knobs must not perturb other modes ----
   // the K5 BAYER8 golden hash restated locally (GOLDEN_FRAME is block-scoped
   // inside runRenderTests); a deliberate regeneration there must update this

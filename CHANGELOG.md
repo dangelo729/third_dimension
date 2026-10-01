@@ -13,6 +13,21 @@ releases may break API; breaks are called out under a "Breaking" heading.
 
 ### Added
 
+- **Baked outline edge tables: `TD_MeshEdges` + `setOutlineEdges`.** A static mesh's
+  `TD_OUTLINE` edge table can be baked offline by `tools/bake_edges.cpp` into a header
+  beside the mesh (TD edges format 1, its own `TD_EDGES_FORMAT` handshake), so it lives
+  in flash. `scene.setOutlineEdges(mesh, edges)` hands it in: while its counts match the
+  mesh and its crease matches `outlineCrease()`, the renderer reads it in place of a
+  built table — no table allocation, and none of the build's scratch (16 B/vertex +
+  8 B/loop slot + 12 B/face on top of the 3 B/loop-slot table), which on a 5200-face
+  mesh is ~280 KB of heap at once. Otherwise the table builds at runtime as before. The
+  tool runs the library's own `TD_EdgeTable::build`, so a baked table is exactly the
+  built one. The registration survives `releaseBuffers()` and `invalidateOutline()`;
+  a table whose counts differ from the mesh's or whose `opp` entries run past its faces
+  is refused. `TD_Mesh` and mesh format 1 are untouched. **No golden pins moved** —
+  purely additive. Tested in the outline suite (O8b), including a doctored table that
+  proves the ink pass reads the baked one and a crease change that falls back to the
+  build.
 - **Line groups: `TD_Object::setInkGroup(group)`.** Under `TD_OUTLINE`, objects sharing a
   line group (1..255) draw as one outline: a member's line draws only where it borders the
   background or a fill outside the group, never against the group's own fills. Parts sunk

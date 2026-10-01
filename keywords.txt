@@ -18,6 +18,7 @@ TD_Color565Target	KEYWORD1
 TD_GFXMonoTarget	KEYWORD1
 TD_GFX565Target	KEYWORD1
 TD_Mesh	KEYWORD1
+TD_MeshEdges	KEYWORD1
 TD_FaceAttr	KEYWORD1
 TD_MaterialCtx	KEYWORD1
 TD_Vec3	KEYWORD1
@@ -66,6 +67,7 @@ celBands	KEYWORD2
 setCelInk	KEYWORD2
 celInk	KEYWORD2
 setOutlineCrease	KEYWORD2
+setOutlineEdges	KEYWORD2
 outlineCrease	KEYWORD2
 prebuildOutline	KEYWORD2
 invalidateOutline	KEYWORD2

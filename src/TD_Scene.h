@@ -60,6 +60,12 @@ class TD_Scene {
   void setOutlineCrease(float radians) { renderer_.setOutlineCrease(radians); }
   float outlineCrease() const { return renderer_.outlineCrease(); }
   bool prebuildOutline() { return renderer_.prebuildOutline(*this); }
+  // a baked edge table for `mesh` (tools/bake_edges.cpp), used in place of
+  // building one while it matches the mesh and the crease — see
+  // TD_Renderer::setOutlineEdges.
+  bool setOutlineEdges(const TD_Mesh &mesh, const TD_MeshEdges &edges) {
+    return renderer_.setOutlineEdges(mesh, edges);
+  }
 
   // render exactly one frame into the target (beginFrame..endFrame bracketed).
   // returns false on failure — reason in lastStatus() — with the target

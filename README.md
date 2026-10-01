@@ -205,7 +205,10 @@ decal faces are skipped entirely under this mode. Because only the endpoint shad
 and 2.0 ever reach the target, the frame is **identical under every dither method** —
 under `TD_OUTLINE`, diffusion's 64 KB buffers buy nothing over `TD_DITHER_BAYER8`. If a
 mesh's topology changes at runtime (or a mesh is freed mid-session), call
-`renderer().invalidateOutline(&mesh)`. See `OutlineGallery` and
+`renderer().invalidateOutline(&mesh)`. A static mesh's table can also be baked
+offline into flash with `tools/bake_edges.cpp` and handed in with
+`scene.setOutlineEdges(mesh, edges)` — no heap and no build at all (see
+[`extras/docs/asset-pipeline.md`](extras/docs/asset-pipeline.md)). See `OutlineGallery` and
 [`extras/docs/limits.md`](extras/docs/limits.md) for the classification envelope.
 
 ## More lights
@@ -266,7 +269,9 @@ no flags (export OBJ, not the raw `.txt`). Flags and pipeline internals are in
   `reserve()` moves allocation into `setup()`; `releaseBuffers()` gives it back.
 - Outline edge tables (`TD_OUTLINE` only): **3 B per polygon-loop entry** per distinct
   mesh, built once and cached (default sphere ≈ 1.4 KB); freed by `releaseBuffers()` /
-  `invalidateOutline()`. Plus the outline depth buffer, **4 B/pixel** (32 KB at
+  `invalidateOutline()`. The build also needs **16 B/vertex + 8 B/loop entry + 12 B/face**
+  of scratch while it runs — for a big mesh that is the peak, so bake its table into flash
+  (`tools/bake_edges.cpp`, `setOutlineEdges`) and skip both. Plus the outline depth buffer, **4 B/pixel** (32 KB at
   128×64), sized from the target in the prepare stage and freed by `releaseBuffers()`,
   and beside it, only in a frame with a line group (`setInkGroup`), a group buffer of
   **1 B/pixel** (8 KB at 128×64).

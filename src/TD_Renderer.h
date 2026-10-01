@@ -6,6 +6,7 @@
 
 #include "TD_Math.h"
 #include "TD_Mesh.h"
+#include "TD_MeshEdges.h"
 #include "TD_RenderTarget.h"
 #include "TD_Types.h"
 
@@ -13,6 +14,7 @@ class TD_Scene;
 class TD_Camera;
 struct TD_EdgeTable;          // internal/td_edge_table.h
 struct TD_OutlineCacheEntry;  // TD_Renderer.cpp: cached per-mesh edge tables
+struct TD_BakedEdgesEntry;    // TD_Renderer.cpp: baked tables handed in per mesh
 
 // the engine: transform -> project -> per-triangle back-face cull -> one
 // global painter sort across all objects -> Gouraud shade -> scanline spans
@@ -75,6 +77,17 @@ class TD_Renderer {
   // counts checksum) catches free-then-realloc reuse cheaply, but an
   // identical-shape rebuild at the same address wants an explicit invalidate.
   void invalidateOutline(const TD_Mesh *mesh = nullptr);
+
+  // hands in a baked edge table for `mesh` (TD_MeshEdges, from
+  // tools/bake_edges.cpp): while its counts match the mesh and its crease
+  // matches outlineCrease(), it stands in for the built table — no table
+  // allocation, no build scratch. otherwise the table builds as usual. the
+  // arrays are borrowed and must outlive the renderer, like a mesh; the
+  // registration is kept through releaseBuffers() and invalidateOutline(),
+  // and a second call for the same mesh replaces it. false (nothing kept) if
+  // the table's counts differ from the mesh's, an opp entry is out of range,
+  // or its registry slot can't be allocated.
+  bool setOutlineEdges(const TD_Mesh &mesh, const TD_MeshEdges &edges);
 
   // pre-size the working buffers in setup() so allocation failures surface at
   // init, not mid-run. sizing: 12 B/vertex + 17 B/face + ~108 B/object on
@@ -157,6 +170,10 @@ class TD_Renderer {
   // invalidateOutline().
   TD_OutlineCacheEntry *outlineCache_ = nullptr;
   uint16_t outlineCount_ = 0, outlineCap_ = 0;
+  // baked tables handed in by setOutlineEdges, one per mesh; freed only by
+  // the destructor.
+  TD_BakedEdgesEntry *baked_ = nullptr;
+  uint16_t bakedCount_ = 0;
   float outlineCrease_ = TD_OUTLINE_CREASE_DEFAULT;
 
   uint8_t mode_ = TD_SHADED;
@@ -213,9 +230,11 @@ class TD_Renderer {
   // TD_OUTLINE internals: cache lookup/build, and the classified ink pass —
   // one face's loop edges drawn at 2.0 iff boundary, crease, or silhouette
   // (the neighbor across the edge is not known front-facing), each pixel
-  // depth-tested against the frame's fills.
+  // depth-tested against the frame's fills. bakedEdges() is the handed-in
+  // table for `mesh` while it applies, else nullptr.
   bool ensureEdgeTable(const TD_Mesh &mesh);
   const TD_EdgeTable *findEdgeTable(const TD_Mesh &mesh) const;
+  const TD_MeshEdges *bakedEdges(const TD_Mesh &mesh) const;
   void outlineClassifiedLoop(TD_RenderTarget &t, const ObjFrame &of, uint16_t face);
 };
 

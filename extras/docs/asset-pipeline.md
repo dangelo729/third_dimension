@@ -121,6 +121,40 @@ deliberately.
   handshake), so it compiles regardless of include order or whether
   `ThirdDimension.h` is present.
 
+## Baking a mesh's outline edge table
+
+Under `TD_OUTLINE` the renderer builds an edge table per mesh at runtime: 3 B per
+loop entry, plus 16 B/vertex + 8 B/loop entry + 12 B/face of scratch while it
+builds. For a big mesh on a small board that scratch is the peak of the whole
+heap. A mesh that never changes shape can have its table baked into flash
+instead, by `tools/bake_edges.cpp` — a host C++ tool that runs the library's own
+build, so the baked table is exactly the built one. From `tools/`:
+
+```sh
+clang++ -std=c++17 -O1 -ffp-contract=off -I../src -include Model.h \
+    -DTD_BAKE_MESH=model_mesh bake_edges.cpp ../src/TD_Mesh.cpp \
+    ../src/internal/td_edge_table.cpp -o bake_edges
+./bake_edges model 0.8 > ModelEdges.h     # symbol prefix, crease in radians
+```
+
+The crease is the value the sketch passes to `setOutlineCrease` (read as a
+float, so `0.8` here is `0.8f` there). Hand the table in at setup:
+
+```cpp
+#include "Model.h"
+#include "ModelEdges.h"
+
+scene.setOutlineCrease(0.8f);
+scene.setOutlineEdges(model_mesh, model_edges);  // before prebuildOutline()
+```
+
+While the table's counts match the mesh and its crease matches the scene's, it
+stands in for the built one; otherwise the table builds at runtime as usual, so
+**re-bake whenever the mesh or the crease changes**. Include the edges header
+from the same `.cpp` as the mesh header: the registration is keyed on the
+mesh's address, and each translation unit gets its own copy of a `static const`
+mesh.
+
 ## Checking a conversion
 
 `td_validateMesh(model_mesh)` runs one-time structural validation — index
