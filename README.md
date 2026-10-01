@@ -267,7 +267,9 @@ no flags (export OBJ, not the raw `.txt`). Flags and pipeline internals are in
 - Outline edge tables (`TD_OUTLINE` only): **3 B per polygon-loop entry** per distinct
   mesh, built once and cached (default sphere ≈ 1.4 KB); freed by `releaseBuffers()` /
   `invalidateOutline()`. Plus the outline depth buffer, **4 B/pixel** (32 KB at
-  128×64), sized from the target in the prepare stage and freed by `releaseBuffers()`.
+  128×64), sized from the target in the prepare stage and freed by `releaseBuffers()`,
+  and beside it, only in a frame with a line group (`setInkGroup`), a group buffer of
+  **1 B/pixel** (8 KB at 128×64).
 - Diffusion dithers (`FLOYD`/`ATKINSON`): **8 B/pixel** (64 KB at 128×64), allocated at
   `setDither()`/`reserve()`, never mid-frame.
 - Procedural primitives: one `malloc` per mesh (default box 696 B, default sphere ≈

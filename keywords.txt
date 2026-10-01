@@ -54,6 +54,8 @@ setScale	KEYWORD2
 setColor	KEYWORD2
 setMaterial	KEYWORD2
 setVisible	KEYWORD2
+setInk	KEYWORD2
+setInkGroup	KEYWORD2
 setAmbient	KEYWORD2
 ambient	KEYWORD2
 setRenderMode	KEYWORD2

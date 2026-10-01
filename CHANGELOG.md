@@ -13,6 +13,32 @@ releases may break API; breaks are called out under a "Breaking" heading.
 
 ### Added
 
+- **Line groups: `TD_Object::setInkGroup(group)`.** Under `TD_OUTLINE`, objects sharing a
+  line group (1..255) draw as one outline: a member's line draws only where it borders the
+  background or a fill outside the group, never against the group's own fills. Parts sunk
+  into each other — cheeks on a head — show only the contour of their union: no member's
+  rim across another (a ball's rim floating over the face it is sunk into), no contour
+  through one (the ink test's depth tolerance, several pixels' worth on a grazing
+  silhouette face, let a head's jawline ink through a cheek just in front of it), and no
+  crease inside any. Against fills outside the group a member's lines depth-test as any
+  line does. Since a grouped line can't lean on its own fill, and a fill can reach a pixel
+  past its silhouette line, it also looks across the diagonals for the background, so a
+  group of one draws exactly as no group. A frame with a group costs **1 B/pixel** more
+  (8 KB at 128×64), allocated in the prepare stage only then and freed by
+  `releaseBuffers()`. Default 0, no group. **No golden pins moved** — purely additive, and
+  a frame without a group runs the old path. Tested in the outline suite (O6d): a ball sunk
+  into a bigger one, whose contour and whose rim each ink through by default and not
+  grouped; a group of one, dense and coarse, alone and over a box, drawing exactly as no
+  group; and an object outside the group inking the same either way.
+- **Inkless objects: `TD_Object::setInk(false)`.** The object still fills — under
+  `TD_OUTLINE` it still records its depth, so it hides what lies behind it — but none of
+  its edges is ever drawn as a line, in any mode: no outline ink, no `TD_SOLID` or
+  `TD_CEL` outlines, nothing under `TD_WIREFRAME`. Its mesh needs no edge table, so
+  `prebuildOutline` and the prepare stage skip it. For occluders that should hide lines
+  without drawing their own — a dark mouth interior behind thin lips, whose rim would
+  otherwise ink through within the ink test's one-pixel reach. Default `true`. **No
+  golden pins moved** — purely additive. Tested in the outline suite (O6c), including an
+  inkless object sharing its mesh with an inked one.
 - **Ellipsoid primitive: `TD_EllipsoidMesh(slices, stacks, rx, ry, rz)`.** The
   non-uniform sphere: UV-sphere topology (identical counts and memory to
   `TD_SphereMesh` at equal tessellation) stretched to independent semi-axes, with the

@@ -596,6 +596,193 @@ void runOutlineTests() {
     }
   }
 
+  // ---- O6c. an inkless object occludes and draws no line ----
+  // the O6 scene with the near sphere's ink off, and a second, inked sphere
+  // on the same mesh out to the side (so the mesh has an edge table): the
+  // window's far ink is still erased, and every lit pixel is one the scene
+  // inks without the inkless sphere — it adds no contour. in the
+  // line-drawing modes it draws no line
+  // either: alone under TD_WIREFRAME it lands nothing, and under TD_SOLID
+  // its fill plots no dark outline pixel.
+  {
+    TD_BoxMesh boxMesh;
+    TD_SphereMesh sphereMesh;
+    static uint8_t without[H][W];
+    {
+      TD_Scene scene;
+      TD_Object box(boxMesh);
+      TD_Object side(sphereMesh);
+      setupK5(scene, box);
+      scene.add(side);
+      box.setPosition(0.0f, 0.0f, 0.9f);
+      side.setScale(0.3f);
+      side.setPosition(2.2f, 0.0f, 0.0f);
+      renderToChecked(scene, target, TD_OUTLINE);
+      std::memcpy(without, fb, sizeof fb);
+    }
+    {
+      TD_Scene scene;
+      TD_Object box(boxMesh);
+      TD_Object side(sphereMesh);
+      TD_Object sphere(sphereMesh);
+      setupK5(scene, box);
+      scene.add(side);
+      scene.add(sphere);
+      box.setPosition(0.0f, 0.0f, 0.9f);
+      side.setScale(0.3f);
+      side.setPosition(2.2f, 0.0f, 0.0f);
+      sphere.setRotation(0.0f, 0.0f, 0.0f);
+      sphere.setPosition(0.0f, 0.0f, -0.9f);
+      sphere.setInk(false);
+      CHECK(scene.prebuildOutline(), "prebuildOutline with an inkless object failed");
+      renderToChecked(scene, target, TD_OUTLINE);
+      long win = 0, extra = 0;
+      for (int y = 14; y <= 18; ++y)
+        for (int x = 62; x <= 66; ++x) win += fb[y][x];
+      for (int y = 0; y < H; ++y)
+        for (int x = 0; x < W; ++x) extra += fb[y][x] == 1 && without[y][x] != 1;
+      CHECK(win == 0, "an inkless near fill must still erase the far ink (%ld/25 lit)", win);
+      CHECK(extra == 0, "an inkless object must add no ink (%ld px)", extra);
+    }
+    {
+      TD_Scene scene;
+      TD_Object sphere(sphereMesh);
+      setupK5(scene, sphere);
+      sphere.setInk(false);
+      renderToChecked(scene, target, TD_WIREFRAME);
+      CHECK(stats().count == 0, "an inkless object under TD_WIREFRAME must land nothing (%d lit)",
+            stats().count);
+    }
+    {
+      TD_Scene scene;
+      TD_Object sphere(sphereMesh);
+      setupK5(scene, sphere);
+      sphere.setInk(false);
+      TD_Renderer &r = scene.renderer();
+      r.setMode(TD_SOLID);
+      TD_MonoTarget traced(tdTestPlot, nullptr, (int16_t)W, (int16_t)H);
+      traced.setAutoClear(false);     // only covered pixels are plotted
+      std::memset(fb, 2, sizeof fb);  // 2 = never plotted: a dark plot is an outline
+      CHECK(r.render(scene, scene.camera, traced), "solid render failed");
+      long dark = 0, lit = 0;
+      for (int y = 0; y < H; ++y)
+        for (int x = 0; x < W; ++x) {
+          dark += fb[y][x] == 0;
+          lit += fb[y][x] == 1;
+        }
+      CHECK(lit > 0 && dark == 0, "an inkless object under TD_SOLID fills and plots no outline (%ld lit, %ld dark)",
+            lit, dark);
+    }
+  }
+
+  // ---- O6d. a line group draws one outline ----
+  // parts sunk into each other, grouped, draw only their union's contour. a
+  // small ball sunk into a big one, as a cheek sits on a head, both in one
+  // group: near the big ball's silhouette, none of its ink lies where the
+  // small one shows; turned in, where the small ball's rim floats over the
+  // big one's face, none of the small ball's ink lies where the big one
+  // shows (with all eight pixels round it showing too: at the union's
+  // contour a grouped line reaches the background across a diagonal). by
+  // default both ink through. a group of one draws exactly as no group,
+  // alone and over a box behind it, so its contour stays closed; and an
+  // object outside the group inks the same either way.
+  {
+    TD_SphereMesh bigMesh(24, 12, 1.0f), smallMesh(16, 8, 1.0f);
+    static uint8_t shows[H][W], line[H][W], plain[H][W];
+    const float cd = 2.0f - 0.3f * 1.2f;  // the small one's center 0.3 of its radius under the surface
+    // the small ball at phi round from the view axis: whose ink, where the
+    // other shows (that other's solid fill, every covered pixel lit; the
+    // first one dark), with or without the group
+    auto across = [&](float phi, bool bigInk, bool grouped) {
+      TD_Scene scene;
+      TD_Object big(bigMesh), small(smallMesh);
+      scene.add(big);
+      scene.add(small);
+      setLegacyCamera(scene.camera);
+      big.setScale(2.0f);
+      small.setScale(1.2f);
+      small.setPosition(cd * sinf(phi), 0.0f, -cd * cosf(phi));
+      big.setInk(false);
+      small.setInk(false);
+      (bigInk ? big : small).setMaterial(TD_MATERIAL_BLACK);
+      renderToChecked(scene, target, TD_SOLID);
+      std::memcpy(shows, fb, sizeof fb);
+      (bigInk ? big : small).setMaterial(TD_MATERIAL_LIT);
+      (bigInk ? big : small).setInk(true);
+      big.setInkGroup(grouped ? 1 : 0);
+      small.setInkGroup(grouped ? 1 : 0);
+      renderToChecked(scene, target, TD_OUTLINE);
+      long n = 0;
+      for (int y = 1; y < H - 1; ++y)
+        for (int x = 1; x < W - 1; ++x) {
+          bool all = fb[y][x] == 1;
+          for (int dy = -1; dy <= 1 && all; ++dy)
+            for (int dx = -1; dx <= 1 && all; ++dx) all = shows[y + dy][x + dx] != 0;
+          n += all;
+        }
+      return n;
+    };
+    const long through = across(1.45f, true, false), throughGrouped = across(1.45f, true, true);
+    CHECK(through > 5 && throughGrouped == 0,
+          "grouped, the big ball's contour must not ink where the small one shows (%ld px; %ld ungrouped)",
+          throughGrouped, through);
+    const long rim = across(0.6f, false, false), rimGrouped = across(0.6f, false, true);
+    CHECK(rim > 5 && rimGrouped == 0,
+          "grouped, the small ball's rim must not ink where the big one shows (%ld px; %ld ungrouped)",
+          rimGrouped, rim);
+
+    TD_SphereMesh dense(48, 24), coarse(16, 8);
+    TD_BoxMesh boxMesh;
+    long differ = 0;
+    for (int m = 0; m < 2; ++m)
+      for (int k = 0; k < 6; ++k)
+        for (int behind = 0; behind < 2; ++behind)
+          for (int grouped = 0; grouped < 2; ++grouped) {
+            TD_Scene scene;
+            TD_Object ball(m ? coarse : dense), box(boxMesh);
+            scene.add(ball);
+            if (behind) scene.add(box);
+            setLegacyCamera(scene.camera);
+            ball.setScale(2.0f);
+            ball.setRotation(0.2f * (float)k, 0.7f * (float)k, 0.0f);
+            ball.setInkGroup(grouped ? 7 : 0);
+            box.setScale(3.0f);
+            box.setPosition(0.5f, 0.3f, 3.0f);
+            box.setRotation(0.3f, 0.5f, 0.0f);
+            renderToChecked(scene, target, TD_OUTLINE);
+            if (!grouped) {
+              std::memcpy(plain, fb, sizeof fb);
+              continue;
+            }
+            for (int y = 0; y < H; ++y)
+              for (int x = 0; x < W; ++x) differ += plain[y][x] != fb[y][x];
+          }
+    CHECK(differ == 0, "a group of one must draw exactly as no group (%ld px differ)", differ);
+
+    for (int grouped = 0; grouped < 2; ++grouped) {
+      TD_Scene scene;
+      TD_Object big(bigMesh), small(smallMesh), box(boxMesh);
+      scene.add(big);
+      scene.add(small);
+      scene.add(box);
+      setLegacyCamera(scene.camera);
+      big.setScale(2.0f);
+      small.setScale(1.2f);
+      small.setPosition(cd * sinf(1.45f), 0.0f, -cd * cosf(1.45f));
+      box.setScale(1.5f);
+      box.setPosition(1.4f, 0.6f, -1.5f);
+      box.setRotation(0.4f, 0.6f, 0.0f);
+      big.setInk(false);
+      small.setInk(false);
+      big.setInkGroup(grouped ? 1 : 0);
+      small.setInkGroup(grouped ? 1 : 0);
+      renderToChecked(scene, target, TD_OUTLINE);
+      std::memcpy(grouped ? line : plain, fb, sizeof fb);
+    }
+    CHECK(stats().count > 20 && std::memcmp(plain, line, sizeof fb) == 0,
+          "an object outside the group must ink the same either way (%ld px)", stats().count);
+  }
+
   // ---- O6b. contour closure: the silhouette ring is one closed line ----
   // a dense sphere (facets under a pixel at this scale) at several poses: a
   // border flood of unlit pixels must never reach the rim center, so every

@@ -26,3 +26,6 @@ void TD_Object::setColor(uint16_t rgb565) { color_ = rgb565; }
 void TD_Object::setMaterial(TD_Material m) { material_ = (uint8_t)m; }
 
 void TD_Object::setVisible(bool v) { visible_ = v; }
+
+void TD_Object::setInk(bool on) { ink_ = on; }
+void TD_Object::setInkGroup(uint8_t group) { inkGroup_ = group; }

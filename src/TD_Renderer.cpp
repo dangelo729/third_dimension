@@ -82,6 +82,9 @@ void TD_Renderer::releaseBuffers() {
   free(depth_);
   depth_ = nullptr;
   capDepth_ = 0;
+  free(groups_);
+  groups_ = nullptr;
+  capGroups_ = 0;
   invalidateOutline(nullptr);
   free(outlineCache_);
   outlineCache_ = nullptr;
@@ -156,6 +159,19 @@ bool TD_Renderer::ensureDepth(uint32_t npix) {
   free(depth_);
   depth_ = p;
   capDepth_ = npix;
+  return true;
+}
+
+// the TD_OUTLINE line-group buffer beside it: one byte per target pixel,
+// grown the same way, allocated only for a frame with a line group.
+bool TD_Renderer::ensureGroups(uint32_t npix) {
+  if (npix <= capGroups_) return true;
+  if (npix > 0x0FFFFFFFu) return false;
+  uint8_t *p = (uint8_t *)malloc((size_t)npix);
+  if (!p) return false;
+  free(groups_);
+  groups_ = p;
+  capGroups_ = npix;
   return true;
 }
 
@@ -239,7 +255,7 @@ bool TD_Renderer::ensureEdgeTable(const TD_Mesh &mesh) {
 
 bool TD_Renderer::prebuildOutline(const TD_Scene &scene) {
   for (const TD_Object *o = scene.firstObject(); o; o = o->next_) {
-    if (!tdKeepObject(*o)) continue;
+    if (!tdKeepObject(*o) || !o->ink()) continue;  // an inkless object needs no table
     if (!ensureEdgeTable(o->mesh())) return false;
   }
   return true;
@@ -306,13 +322,21 @@ bool TD_Renderer::prepare(const TD_Scene &scene, TD_Camera &camera, TD_RenderTar
   // contract). cached tables are free.
   if (mode_ == TD_OUTLINE) {
     for (const TD_Object *o = scene.firstObject(); o; o = o->next_) {
-      if (!tdKeepObject(*o)) continue;
+      if (!tdKeepObject(*o) || !o->ink()) continue;  // an inkless object needs no table
       if (!ensureEdgeTable(o->mesh())) {
         status_ = TD_ERR_ALLOC;
         return false;
       }
     }
     if (!ensureDepth((uint32_t)tw_ * (uint32_t)th_)) {
+      status_ = TD_ERR_ALLOC;
+      return false;
+    }
+    // the line-group buffer, for a frame with a line group.
+    bool grouped = false;
+    for (const TD_Object *o = scene.firstObject(); o; o = o->next_)
+      grouped = grouped || (tdKeepObject(*o) && o->inkGroup() != 0);
+    if (grouped && !ensureGroups((uint32_t)tw_ * (uint32_t)th_)) {
       status_ = TD_ERR_ALLOC;
       return false;
     }
@@ -380,6 +404,8 @@ void TD_Renderer::drawFrame(const TD_Scene &scene, const TD_Camera &camera,
     of.baseColor = o->color();
     of.objectIdx = nKept;
     of.material = (uint8_t)o->material();
+    of.ink = o->ink();
+    of.group = o->inkGroup();
     of.N = tdEulerXYZ(o->rotX(), o->rotY(), o->rotZ());  // normals: rotation only
     of.M = tdMat3ScaleUniform(tdMat3Mul(Rv, of.N), o->scale());
     of.T = tdMat3MulVec(Rv, tdSub(tdVec3(o->x(), o->y(), o->z()), eye));
@@ -512,9 +538,15 @@ void TD_Renderer::drawFrame(const TD_Scene &scene, const TD_Camera &camera,
   // TD_OUTLINE keeps the nearest fill depth per pixel across the frame; the
   // ink pass after the fills tests every edge pixel against it.
   depthOn_ = false;
+  groupsOn_ = false;
   if (outlineMode) {
     const uint32_t npix = (uint32_t)tw_ * (uint32_t)th_;
     for (uint32_t i = 0; i < npix; ++i) depth_[i] = FLT_MAX;
+    // beside each depth, the line group of the fill that wrote it (prepare
+    // sized the buffer for any frame with one).
+    for (uint16_t oi = 0; oi < nKept; ++oi) groupsOn_ = groupsOn_ || objs_[oi].group != 0;
+    if (groupsOn_)
+      for (uint32_t i = 0; i < npix; ++i) groups_[i] = 0;
   }
 
   for (uint32_t i = 0; i < nRec; ++i) {
@@ -549,6 +581,7 @@ void TD_Renderer::drawFrame(const TD_Scene &scene, const TD_Camera &camera,
       target.setMaterial(ctx);
       depthOn_ = true;
       depthFlat_ = whiteFill ? 2.0f : 0.0f;
+      depthGroup_ = of.group;
       for (uint16_t t = triStart; t < triStart + triCount; ++t) {
         // every fan triangle fills — the per-triangle re-cull is skipped so
         // a non-planar face leaves no coverage holes for hidden lines to
@@ -615,6 +648,7 @@ void TD_Renderer::drawFrame(const TD_Scene &scene, const TD_Camera &camera,
         fillTri(target, ax, ay, sh[0], bx, by, sh[1], ccx, ccy, sh[2]);
       }
     }
+    if (!of.ink) continue;  // it filled; it draws no line
     if (mode_ == TD_SOLID || (mode_ == TD_CEL && celInk_ == TD_CEL_INK_BLACK)) {
       // true-edge outlines at exact shade 0.0; the material context is
       // re-latched to black so color targets draw them in the exact palette.
@@ -639,6 +673,7 @@ void TD_Renderer::drawFrame(const TD_Scene &scene, const TD_Camera &camera,
     for (uint32_t i = 0; i < nRec; ++i) {
       const DrawRec &r = rec_[i];
       const ObjFrame &of = objs_[r.obj];
+      if (!of.ink) continue;  // it filled; it inks nothing
       TD_MaterialCtx ctx;
       ctx.mat = TD_MATERIAL_WHITE;
       ctx.mode = mode_;
@@ -798,9 +833,20 @@ void TD_Renderer::depthFillSpan(TD_RenderTarget &t, int y, float xl, float xr, f
   float w = xr - xl;
   float slope = w > 1e-6f ? (zr - zl) / w : 0.0f;
   float *row = depth_ + (uint32_t)y * (uint32_t)tw_;
-  for (int x = xs; x <= xe; ++x) {
-    float z = zl + ((float)x + 0.5f - xl) * slope;
-    if (z < row[x]) row[x] = z;
+  if (groupsOn_) {
+    uint8_t *grow = groups_ + (uint32_t)y * (uint32_t)tw_;
+    for (int x = xs; x <= xe; ++x) {
+      float z = zl + ((float)x + 0.5f - xl) * slope;
+      if (z < row[x]) {
+        row[x] = z;
+        grow[x] = depthGroup_;
+      }
+    }
+  } else {
+    for (int x = xs; x <= xe; ++x) {
+      float z = zl + ((float)x + 0.5f - xl) * slope;
+      if (z < row[x]) row[x] = z;
+    }
   }
   fillSpan(t, y, xl, xr, depthFlat_, depthFlat_);
 }
@@ -926,15 +972,30 @@ void TD_Renderer::drawLineShade(TD_RenderTarget &t, float x0, float y0, float x1
 // neighbor is uncovered (FLT_MAX, always passes), across a crease it is
 // the face on the other side at about the same depth. a hidden line's
 // pixels and their neighbors all sit under the occluder, except within one
-// pixel of the occluder's own contour.
-static inline bool inkVisible(const float *depth, int tw, int th, int x, int y, float z,
-                              float tol) {
-  const float *row = depth + (uint32_t)y * (uint32_t)tw;
-  if (z <= row[x] + tol) return true;
-  if (x > 0 && z <= row[x - 1] + tol) return true;
-  if (x + 1 < tw && z <= row[x + 1] + tol) return true;
-  if (y > 0 && z <= row[x - tw] + tol) return true;
-  if (y + 1 < th && z <= row[x + tw] + tol) return true;
+// pixel of the occluder's own contour. a line in a line group never passes
+// on a fill of its own group: only the background or a fill outside the
+// group can let it through, so the group draws only its union's contour.
+static inline bool inkPass(const float *depth, const uint8_t *groups, uint32_t i, float z,
+                           float tol, uint8_t group) {
+  if (group != 0 && groups[i] == group) return false;
+  return z <= depth[i] + tol;
+}
+static inline bool inkVisible(const float *depth, const uint8_t *groups, int tw, int th, int x,
+                              int y, float z, float tol, uint8_t group) {
+  const uint32_t i = (uint32_t)y * (uint32_t)tw + (uint32_t)x;
+  if (inkPass(depth, groups, i, z, tol, group)) return true;
+  if (x > 0 && inkPass(depth, groups, i - 1, z, tol, group)) return true;
+  if (x + 1 < tw && inkPass(depth, groups, i + 1, z, tol, group)) return true;
+  if (y > 0 && inkPass(depth, groups, i - (uint32_t)tw, z, tol, group)) return true;
+  if (y + 1 < th && inkPass(depth, groups, i + (uint32_t)tw, z, tol, group)) return true;
+  if (group == 0) return false;
+  // a grouped line can't lean on its own fill, and a fill can reach a pixel
+  // past its silhouette line (every fan triangle of a face fills), so where
+  // the line steps, the way out to the background may be only diagonal.
+  if (x > 0 && y > 0 && inkPass(depth, groups, i - (uint32_t)tw - 1, z, tol, group)) return true;
+  if (x + 1 < tw && y > 0 && inkPass(depth, groups, i - (uint32_t)tw + 1, z, tol, group)) return true;
+  if (x > 0 && y + 1 < th && inkPass(depth, groups, i + (uint32_t)tw - 1, z, tol, group)) return true;
+  if (x + 1 < tw && y + 1 < th && inkPass(depth, groups, i + (uint32_t)tw + 1, z, tol, group)) return true;
   return false;
 }
 
@@ -942,7 +1003,7 @@ static inline bool inkVisible(const float *depth, int tw, int th, int x, int y, 
 // interpolated along the segment, each pixel plotted at 2.0 only where
 // inkVisible passes it.
 void TD_Renderer::drawLineDepth(TD_RenderTarget &t, float x0, float y0, float z0, float x1,
-                                float y1, float z1, float tol) {
+                                float y1, float z1, float tol, uint8_t group) {
   if (!(isfinite(x0) && isfinite(y0) && isfinite(x1) && isfinite(y1))) return;
   const float bx = (float)TD_GUARD_BAND * (float)tw_;
   const float by = (float)TD_GUARD_BAND * (float)th_;
@@ -972,7 +1033,7 @@ void TD_Renderer::drawLineDepth(TD_RenderTarget &t, float x0, float y0, float z0
   float z = z0;
   for (;;) {
     if ((unsigned)ix0 < (unsigned)tw_ && (unsigned)iy0 < (unsigned)th_ &&
-        inkVisible(depth_, tw_, th_, ix0, iy0, z, tol))
+        inkVisible(depth_, groups_, tw_, th_, ix0, iy0, z, tol, groupsOn_ ? group : (uint8_t)0))
       t.plotShade((int16_t)ix0, (int16_t)iy0, 2.0f);
     if (ix0 == ix1 && iy0 == iy1) break;
     int e2 = 2 * err;
@@ -1041,6 +1102,6 @@ void TD_Renderer::outlineClassifiedLoop(TD_RenderTarget &t, const ObjFrame &of, 
     if (!ink) continue;
     uint32_t i = vb + msh.faceVerts[slot];
     uint32_t j = vb + msh.faceVerts[loopStart + (uint16_t)((k + 1) % loopCount)];
-    drawLineDepth(t, sx_[i], sy_[i], sz_[i], sx_[j], sy_[j], sz_[j], tol);
+    drawLineDepth(t, sx_[i], sy_[i], sz_[i], sx_[j], sy_[j], sz_[j], tol, of.group);
   }
 }

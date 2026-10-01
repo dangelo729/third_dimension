@@ -33,6 +33,20 @@ class TD_Object {
   // leave decal draw ordering intact.
   void setMaterial(TD_Material m);
   void setVisible(bool v);
+  // false: the object still fills — under TD_OUTLINE it still records its
+  // depth, so it hides what lies behind it — but none of its edges is ever
+  // drawn as a line, in any mode. an occluder, like the dark back of a
+  // mouth. true by default.
+  void setInk(bool on);
+  // under TD_OUTLINE, objects sharing a line group (1..255) draw as one
+  // outline: a member's line draws only where it borders the background or
+  // a fill outside the group, never against the group's own fills — so
+  // parts sunk into each other, like cheeks on a head, show only the
+  // contour of their union: no member's rim across another, no contour
+  // through one, and no crease inside any. against fills outside the group
+  // its lines depth-test as any line does. 0, the default, is no group; a
+  // frame with a group costs 1 B/pixel more of outline buffer.
+  void setInkGroup(uint8_t group);
 
   float x() const { return posX_; }
   float y() const { return posY_; }
@@ -44,6 +58,8 @@ class TD_Object {
   uint16_t color() const { return color_; }
   TD_Material material() const { return (TD_Material)material_; }
   bool visible() const { return visible_; }
+  bool ink() const { return ink_; }
+  uint8_t inkGroup() const { return inkGroup_; }
   const TD_Mesh &mesh() const { return *mesh_; }
 
  private:
@@ -54,6 +70,8 @@ class TD_Object {
   uint16_t color_ = 0xFFFF;
   uint8_t material_ = TD_MATERIAL_LIT;
   bool visible_ = true;
+  bool ink_ = true;
+  uint8_t inkGroup_ = 0;
   TD_Object *next_ = nullptr;  // intrusive scene-list link
 
   friend class TD_Scene;

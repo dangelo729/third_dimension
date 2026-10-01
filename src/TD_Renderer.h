@@ -126,6 +126,8 @@ class TD_Renderer {
                           //   (OUTLINE's neighbor-facing lookups need it)
     uint16_t baseColor, objectIdx;
     uint8_t material;     // whole-object TD_Material override
+    bool ink;             // false: no edge of this object is ever drawn
+    uint8_t group;        // its line group, 0 for none
   };
 
   // working buffers: exact-fit high-water realloc, pointers only reassigned
@@ -144,6 +146,10 @@ class TD_Renderer {
   // reset every outline frame; the ink pass tests each edge pixel against it.
   float *depth_ = nullptr;
   uint32_t capDepth_ = 0;
+  // beside it, only in a frame with a line group: per pixel, the line group
+  // of the fill that holds that depth, 0 for none or for the background.
+  uint8_t *groups_ = nullptr;
+  uint32_t capGroups_ = 0;
 
   // TD_OUTLINE edge-table cache: one entry per distinct mesh, keyed on the
   // mesh pointer plus a (nverts, nfaces, faceVertCount) checksum. built in
@@ -163,9 +169,12 @@ class TD_Renderer {
   float celAmbient_ = 0.0f;
   // outline fill latches, valid only inside drawFrame: while depthOn_ the
   // fill interpolant is view depth, written per pixel, and the shade that
-  // crosses the seam is the flat depthFlat_.
+  // crosses the seam is the flat depthFlat_. while groupsOn_ (the frame has
+  // a line group) each depth written stamps depthGroup_.
   bool depthOn_ = false;
   float depthFlat_ = 0.0f;
+  bool groupsOn_ = false;
+  uint8_t depthGroup_ = 0;
   float cullSign_ = 1.0f;
   uint8_t status_ = TD_OK;
   int16_t tw_ = 0, th_ = 0;  // target dims cached for the frame
@@ -173,6 +182,7 @@ class TD_Renderer {
 
   bool ensureCapacity(uint32_t nv, uint32_t nf, uint16_t nobj);
   bool ensureDepth(uint32_t npix);
+  bool ensureGroups(uint32_t npix);
   static int cmpFarFirst(const void *a, const void *b);
 
   // the fallible prologue (validate, size, resolve camera) and the infallible
@@ -196,7 +206,7 @@ class TD_Renderer {
   void depthFillSpan(TD_RenderTarget &t, int y, float xl, float xr, float zl, float zr);
   void drawLineShade(TD_RenderTarget &t, float x0, float y0, float x1, float y1, float shade);
   void drawLineDepth(TD_RenderTarget &t, float x0, float y0, float z0, float x1, float y1,
-                     float z1, float tol);
+                     float z1, float tol, uint8_t group);
   void outlineLoop(TD_RenderTarget &t, const ObjFrame &of, uint16_t loopStart,
                    uint16_t loopCount, float shade);
 
