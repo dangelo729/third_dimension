@@ -140,6 +140,13 @@ plus one list pointer per light:
   face steeper than the tolerance covers can hide behind a neighbor's fill.
   Intersection curves between objects are not mesh edges and are never
   drawn.
+- **A fill-less object (`setFill(false)`) is glass:** it records no depth,
+  and its back faces ink their crease and boundary edges, so its own far
+  lines show through its near wall by design — right for glass, busy on a
+  mesh with many creases (where its surface is smooth it draws only its
+  contour). Its lines depth-test against the frame's fills like any line
+  and share the envelope above: one can poke one pixel past an occluder's
+  contour where it meets it from behind.
 - **Under `TD_OUTLINE` the dither method cannot affect the frame** — only
   the endpoint shades 0.0/2.0 cross the seam, and every method realizes
   them identically. A sketch that only ever renders outline mode can drop

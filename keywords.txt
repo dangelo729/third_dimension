@@ -57,6 +57,7 @@ setMaterial	KEYWORD2
 setVisible	KEYWORD2
 setInk	KEYWORD2
 setInkGroup	KEYWORD2
+setFill	KEYWORD2
 setAmbient	KEYWORD2
 ambient	KEYWORD2
 setRenderMode	KEYWORD2
@@ -128,6 +129,7 @@ scale	KEYWORD2
 color	KEYWORD2
 material	KEYWORD2
 visible	KEYWORD2
+fill	KEYWORD2
 mesh	KEYWORD2
 td_color565	KEYWORD2
 td_validateMesh	KEYWORD2

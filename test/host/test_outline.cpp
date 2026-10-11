@@ -783,6 +783,262 @@ void runOutlineTests() {
           "an object outside the group must ink the same either way (%ld px)", stats().count);
   }
 
+  // ---- O6e. a fill-less object is glass ----
+  // a box with its fill off, in the K5 pose: it fills nothing and records no
+  // depth, so it hides nothing — a sphere inside it inks every pixel it inks
+  // alone. under TD_OUTLINE its back faces' crease edges ink too, so all
+  // twelve of its edges draw: every pixel the filled box inks, more beside,
+  // and the middles of the three edges at its far corner, which the filled
+  // box hides. its back faces' records count in lastDrawCount. a back face
+  // inks no silhouette, so a glass sphere inks its contour alone. a filled
+  // sphere between the eye and that corner hides the far edges inside its
+  // disc and nowhere else. in the other modes it draws lines as the mode
+  // draws them: under TD_SOLID and TD_CEL only its dark true edges, under
+  // TD_SHADED nothing, under TD_WIREFRAME exactly the filled box's frame.
+  // with its ink off too it plots nothing in any mode. prebuildOutline takes
+  // it, and it renders beside a line group.
+  {
+    TD_BoxMesh boxMesh;
+    TD_SphereMesh sphereMesh;
+    const float bs = 1.4f;  // the box's scale
+    static uint8_t filled[H][W], glass[H][W], alone[H][W], disc[H][W];
+    TD_Vec3 farCorner = {0.0f, 0.0f, 0.0f};  // world space
+    {
+      TD_Scene scene;
+      TD_Object box(boxMesh);
+      setupK5(scene, box);
+      box.setScale(bs);
+      renderToChecked(scene, target, TD_OUTLINE);
+      std::memcpy(filled, fb, sizeof fb);
+      const long filledLit = stats().count;
+      const uint32_t filledDrawn = scene.renderer().lastDrawCount();
+      box.setFill(false);
+      renderToChecked(scene, target, TD_OUTLINE);
+      std::memcpy(glass, fb, sizeof fb);
+      const long glassLit = stats().count;
+      const uint32_t glassDrawn = scene.renderer().lastDrawCount();
+      CHECK(filledDrawn == 3 && glassDrawn == 6,
+            "a glass box's back faces must count as records (%u drawn; %u filled)",
+            (unsigned)glassDrawn, (unsigned)filledDrawn);
+      long missing = 0;
+      for (int y = 0; y < H; ++y)
+        for (int x = 0; x < W; ++x) missing += filled[y][x] == 1 && glass[y][x] != 1;
+      CHECK(missing == 0 && glassLit > filledLit,
+            "a glass box must ink all the filled box inks and more (%ld px missing; %ld vs %ld lit)",
+            missing, glassLit, filledLit);
+
+      // the far corner is the box corner deepest in view; the camera is
+      // resolved by the render above
+      const TD_Camera &cam = scene.camera;
+      const TD_Mat3 R = tdEulerXYZ(TILT, 0.7f, 0.0f);
+      TD_Vec3 world[8], view[8];
+      int fc = 0;
+      for (int c = 0; c < 8; ++c) {
+        const TD_Vec3 q = {(c & 1 ? 0.5f : -0.5f) * bs, (c & 2 ? 0.5f : -0.5f) * bs,
+                           (c & 4 ? 0.5f : -0.5f) * bs};
+        world[c] = tdMat3MulVec(R, q);
+        view[c] = cam.worldToView(world[c]);
+        if (view[c].z > view[fc].z) fc = c;
+      }
+      farCorner = world[fc];
+      for (int b = 0; b < 3; ++b) {
+        const TD_Vec3 &p = view[fc], &q = view[fc ^ (1 << b)];
+        const TD_Vec3 m = {(p.x + q.x) * 0.5f, (p.y + q.y) * 0.5f, (p.z + q.z) * 0.5f};
+        const int mx = (int)floorf(cam.centerX() + cam.focalPixels() * m.x / m.z);
+        const int my = (int)floorf(cam.centerY() - cam.focalPixels() * m.y / m.z);
+        long lit = 0, litFilled = 0;
+        for (int dy = -1; dy <= 1; ++dy)
+          for (int dx = -1; dx <= 1; ++dx) {
+            const int x = mx + dx, y = my + dy;
+            if (x < 0 || x >= W || y < 0 || y >= H) continue;
+            lit += glass[y][x] == 1;
+            litFilled += filled[y][x] == 1;
+          }
+        CHECK(lit > 0 && litFilled == 0,
+              "far edge %d's middle (%d,%d) must ink for the glass and not the filled box (%ld / %ld lit)",
+              b, mx, my, lit, litFilled);
+      }
+    }
+
+    // hides nothing: a sphere inside the glass inks every pixel it inks alone
+    {
+      TD_Scene scene;
+      TD_Object ball(sphereMesh), box(boxMesh);
+      setupK5(scene, ball);
+      ball.setScale(0.8f);
+      renderToChecked(scene, target, TD_OUTLINE);
+      std::memcpy(alone, fb, sizeof fb);
+      const long ballLit = stats().count;
+      scene.add(box);
+      box.setScale(bs);
+      box.setRotation(TILT, 0.7f, 0.0f);
+      box.setFill(false);
+      renderToChecked(scene, target, TD_OUTLINE);
+      long lost = 0;
+      for (int y = 0; y < H; ++y)
+        for (int x = 0; x < W; ++x) lost += alone[y][x] == 1 && fb[y][x] != 1;
+      CHECK(ballLit > 20 && lost == 0,
+            "a glass must hide none of the sphere inside it (%ld of %ld px lost)", lost, ballLit);
+    }
+
+    // a back face inks only its crease and boundary edges: a sphere has
+    // neither, so as glass it inks its contour ring alone, its inside clean
+    {
+      TD_Scene scene;
+      TD_Object ball(sphereMesh);
+      setupK5(scene, ball);
+      ball.setRotation(0.0f, 0.0f, 0.0f);
+      ball.setFill(false);
+      renderToChecked(scene, target, TD_OUTLINE);
+      const Stats s = stats();
+      const long in = discCount((s.minx + s.maxx) * 0.5, (s.miny + s.maxy) * 0.5,
+                                (s.maxx - s.minx) * 0.5 - 2.0);
+      CHECK(s.count > 20 && in == 0, "a glass sphere must ink its contour alone (%ld lit inside)",
+            in);
+    }
+
+    // is hidden by others: a filled sphere on the line from the eye to the
+    // far corner, 0.7 short of it. its disc is its inkless solid footprint
+    // alone; a far-edge pixel (inked by the glass, not by the filled box)
+    // with all eight round it in the disc is hidden, one with none of the
+    // 24 round it in the disc shows
+    {
+      const TD_Vec3 eye = {0.0f, 0.0f, -4.0f};
+      const TD_Vec3 toEye = tdSub(eye, farCorner);
+      const float len = tdLength(toEye);
+      const float pull = 0.7f / len;
+      TD_Scene scene;
+      TD_Object box(boxMesh), ball(sphereMesh);
+      setupK5(scene, box);
+      box.setScale(bs);
+      box.setFill(false);
+      box.setVisible(false);
+      scene.add(ball);
+      ball.setScale(0.9f);
+      ball.setPosition(farCorner.x + toEye.x * pull, farCorner.y + toEye.y * pull,
+                       farCorner.z + toEye.z * pull);
+      ball.setInk(false);
+      renderToChecked(scene, target, TD_SOLID);
+      std::memcpy(disc, fb, sizeof fb);
+      box.setVisible(true);
+      ball.setInk(true);
+      renderToChecked(scene, target, TD_OUTLINE);
+      long inside = 0, insideLit = 0, outside = 0, outsideDark = 0;
+      for (int y = 2; y < H - 2; ++y)
+        for (int x = 2; x < W - 2; ++x) {
+          if (glass[y][x] != 1 || filled[y][x] == 1) continue;
+          bool allIn = true, anyIn = false;
+          for (int dy = -2; dy <= 2; ++dy)
+            for (int dx = -2; dx <= 2; ++dx) {
+              const bool in = disc[y + dy][x + dx] == 1;
+              anyIn = anyIn || in;
+              if (dy >= -1 && dy <= 1 && dx >= -1 && dx <= 1) allIn = allIn && in;
+            }
+          if (allIn) {
+            ++inside;
+            insideLit += fb[y][x] == 1;
+          } else if (!anyIn) {
+            ++outside;
+            outsideDark += fb[y][x] != 1;
+          }
+        }
+      CHECK(inside > 5 && insideLit == 0,
+            "the glass's far edges must hide inside the sphere's disc (%ld of %ld px lit)",
+            insideLit, inside);
+      CHECK(outside > 10 && outsideDark == 0,
+            "the glass's far edges must show outside the sphere's disc (%ld of %ld px dark)",
+            outsideDark, outside);
+    }
+
+    // the other modes, by the tracer: 2 is never plotted, a dark plot an
+    // outline
+    {
+      TD_Scene scene;
+      TD_Object box(boxMesh);
+      setupK5(scene, box);
+      box.setScale(bs);
+      box.setFill(false);
+      TD_Renderer &r = scene.renderer();
+      TD_MonoTarget traced(tdTestPlot, nullptr, (int16_t)W, (int16_t)H);
+      traced.setAutoClear(false);  // only what is plotted lands
+      const TD_RenderMode lineModes[2] = {TD_SOLID, TD_CEL};
+      for (int i = 0; i < 2; ++i) {
+        r.setMode(lineModes[i]);
+        std::memset(fb, 2, sizeof fb);
+        CHECK(r.render(scene, scene.camera, traced), "glass render failed in mode %d",
+              (int)lineModes[i]);
+        long dark = 0, lit = 0;
+        for (int y = 0; y < H; ++y)
+          for (int x = 0; x < W; ++x) {
+            dark += fb[y][x] == 0;
+            lit += fb[y][x] == 1;
+          }
+        CHECK(lit == 0 && dark > 0,
+              "a glass under mode %d must plot only its dark true edges (%ld lit, %ld dark)",
+              (int)lineModes[i], lit, dark);
+      }
+      r.setMode(TD_SHADED);
+      std::memset(fb, 2, sizeof fb);
+      CHECK(r.render(scene, scene.camera, traced), "glass render failed under TD_SHADED");
+      long plotted = 0;
+      for (int y = 0; y < H; ++y)
+        for (int x = 0; x < W; ++x) plotted += fb[y][x] != 2;
+      CHECK(plotted == 0, "a glass under TD_SHADED must plot nothing (%ld px)", plotted);
+
+      static uint8_t wire[H][W];
+      box.setFill(true);
+      renderToChecked(scene, target, TD_WIREFRAME);
+      std::memcpy(wire, fb, sizeof fb);
+      box.setFill(false);
+      renderToChecked(scene, target, TD_WIREFRAME);
+      CHECK(stats().count > 0 && std::memcmp(wire, fb, sizeof fb) == 0,
+            "a glass under TD_WIREFRAME must draw the filled box's frame (%ld px)",
+            stats().count);
+    }
+
+    // both off: nothing plotted in any mode
+    {
+      TD_Scene scene;
+      TD_Object box(boxMesh);
+      setupK5(scene, box);
+      box.setScale(bs);
+      box.setFill(false);
+      box.setInk(false);
+      TD_Renderer &r = scene.renderer();
+      TD_MonoTarget traced(tdTestPlot, nullptr, (int16_t)W, (int16_t)H);
+      traced.setAutoClear(false);
+      long plotted = 0;
+      for (int m = 0; m < TD_RENDER_MODE_COUNT; ++m) {
+        r.setMode((TD_RenderMode)m);
+        std::memset(fb, 2, sizeof fb);
+        CHECK(r.render(scene, scene.camera, traced), "fill-less inkless render failed in mode %d",
+              m);
+        for (int y = 0; y < H; ++y)
+          for (int x = 0; x < W; ++x) plotted += fb[y][x] != 2;
+      }
+      CHECK(plotted == 0, "an object with fill and ink off must plot nothing (%ld px)", plotted);
+    }
+
+    // prebuild: a glass beside a line group
+    {
+      TD_Scene scene;
+      TD_Object box(boxMesh), big(sphereMesh), small(sphereMesh);
+      setupK5(scene, box);
+      box.setScale(bs);
+      box.setFill(false);
+      scene.add(big);
+      scene.add(small);
+      big.setScale(0.8f);
+      small.setScale(0.4f);
+      small.setPosition(0.3f, 0.2f, -0.2f);
+      big.setInkGroup(1);
+      small.setInkGroup(1);
+      CHECK(scene.prebuildOutline(), "prebuildOutline with a glass failed");
+      renderToChecked(scene, target, TD_OUTLINE);
+      CHECK(stats().count > 0, "a glass beside a line group must render ink");
+    }
+  }
+
   // ---- O6b. contour closure: the silhouette ring is one closed line ----
   // a dense sphere (facets under a pixel at this scale) at several poses: a
   // border flood of unlit pixels must never reach the rim center, so every

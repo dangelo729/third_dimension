@@ -79,7 +79,8 @@ Renderer guarantees to the target:
   renderer-side bounds funnel. Skip bounds checks in your hot loops.
 - **G2 (coverage).** Every pixel covered by a front face is plotted,
   including fully dark ones. Painter overwrite — a near face covering a
-  far one — depends on dark pixels being delivered.
+  far one — depends on dark pixels being delivered. A fill-less object
+  (`TD_Object::setFill(false)`) covers nothing: only its lines arrive.
 - **G3 (endpoint shades).** BLACK-material faces, SOLID-mode outlines,
   TD_CEL black ink, and TD_OUTLINE hidden-line fills arrive as exactly
   `0.0`; WHITE faces, SOLID fills, WIREFRAME lines, TD_CEL white ink,

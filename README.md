@@ -211,6 +211,17 @@ offline into flash with `tools/bake_edges.cpp` and handed in with
 [`extras/docs/asset-pipeline.md`](extras/docs/asset-pipeline.md)). See `OutlineGallery` and
 [`extras/docs/limits.md`](extras/docs/limits.md) for the classification envelope.
 
+An object can be **glass**: `obj.setFill(false)` fills nothing and records no depth, in
+any mode, so it hides nothing, and its lines draw as the mode draws lines. Under
+`TD_OUTLINE` its back faces ink their crease and boundary edges too, so a box's far
+edges and a bottle's far rim show through its near wall, while every one of its lines is
+depth-tested against the frame's fills like any line — water inside the glass hides the
+far lines it stands in front of. Under `TD_SOLID` and `TD_CEL` only its true-edge ink
+draws, under `TD_WIREFRAME` its front edges as ever, and under `TD_SHADED` nothing. It is
+the dual of `obj.setInk(false)`, an occluder that fills (and under `TD_OUTLINE` records
+its depth) but never draws a line. The two switches are independent: with both off an
+object draws nothing and still counts for the camera's fit.
+
 ## More lights
 
 ```cpp

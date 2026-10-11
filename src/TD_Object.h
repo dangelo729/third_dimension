@@ -38,6 +38,11 @@ class TD_Object {
   // drawn as a line, in any mode. an occluder, like the dark back of a
   // mouth. true by default.
   void setInk(bool on);
+  // false: the object fills nothing and records no depth, in any mode, so it
+  // hides nothing; its edges draw as the mode draws lines. under TD_OUTLINE
+  // its back faces' crease and boundary edges draw too, so the far side of a
+  // glass shows through the near. true by default.
+  void setFill(bool on);
   // under TD_OUTLINE, objects sharing a line group (1..255) draw as one
   // outline: a member's line draws only where it borders the background or
   // a fill outside the group, never against the group's own fills — so
@@ -59,6 +64,7 @@ class TD_Object {
   TD_Material material() const { return (TD_Material)material_; }
   bool visible() const { return visible_; }
   bool ink() const { return ink_; }
+  bool fill() const { return fill_; }
   uint8_t inkGroup() const { return inkGroup_; }
   const TD_Mesh &mesh() const { return *mesh_; }
 
@@ -71,6 +77,7 @@ class TD_Object {
   uint8_t material_ = TD_MATERIAL_LIT;
   bool visible_ = true;
   bool ink_ = true;
+  bool fill_ = true;
   uint8_t inkGroup_ = 0;
   TD_Object *next_ = nullptr;  // intrusive scene-list link
 

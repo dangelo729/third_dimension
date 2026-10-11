@@ -451,6 +451,7 @@ void TD_Renderer::drawFrame(const TD_Scene &scene, const TD_Camera &camera,
     of.objectIdx = nKept;
     of.material = (uint8_t)o->material();
     of.ink = o->ink();
+    of.fill = o->fill();
     of.group = o->inkGroup();
     of.N = tdEulerXYZ(o->rotX(), o->rotY(), o->rotZ());  // normals: rotation only
     of.M = tdMat3ScaleUniform(tdMat3Mul(Rv, of.N), o->scale());
@@ -519,8 +520,9 @@ void TD_Renderer::drawFrame(const TD_Scene &scene, const TD_Camera &camera,
   // under TD_OUTLINE only, the per-face facing result is also recorded (for
   // the ink pass's silhouette test) and decal faces are skipped whole —
   // their loop edges are unshared and would ink as permanent boundary
-  // rectangles. other modes take no memset and no stores: the disabled path
-  // stays byte-identical.
+  // rectangles. a fill-less object's back faces get records too, stored
+  // BACK, so the ink pass draws their crease and boundary edges. other modes
+  // take no memset and no stores: the disabled path stays byte-identical.
   const bool outlineMode = mode_ == TD_OUTLINE;
   if (outlineMode) memset(faceFront_, TD_FACING_UNKNOWN, (size_t)faceBase);
   uint32_t nRec = 0;
@@ -544,7 +546,7 @@ void TD_Renderer::drawFrame(const TD_Scene &scene, const TD_Camera &camera,
       }
       if (outlineMode)
         faceFront_[fBase + f] = anyFront ? TD_FACING_FRONT : TD_FACING_BACK;
-      if (!anyFront) continue;
+      if (!anyFront && (!outlineMode || of.fill)) continue;
 
       float zkey = fz;
       uint8_t grp = 0;
@@ -615,7 +617,8 @@ void TD_Renderer::drawFrame(const TD_Scene &scene, const TD_Camera &camera,
       // per pixel for the ink pass that follows the loop. WHITE faces fill
       // at 2.0 instead (a face's opt-in to solid white — the eyeball case),
       // keeping WHITE's unconditionally-lit contract; everything else fills
-      // at 0.0.
+      // at 0.0. a fill-less object's faces fill nothing and write no depth.
+      if (!of.fill) continue;
       celSpanOn_ = false;
       const bool whiteFill = mat == TD_MATERIAL_WHITE;
       TD_MaterialCtx ctx;
@@ -651,7 +654,7 @@ void TD_Renderer::drawFrame(const TD_Scene &scene, const TD_Camera &camera,
     ctx.faceIdx = r.face;
     target.setMaterial(ctx);
 
-    if (mode_ != TD_WIREFRAME) {
+    if (mode_ != TD_WIREFRAME && of.fill) {  // a fill-less face goes straight to its ink
       for (uint16_t t = triStart; t < triStart + triCount; ++t) {
         uint16_t a = msh.tris[t][0], b = msh.tris[t][1], c = msh.tris[t][2];
         float ax = sx_[vb + a], ay = sy_[vb + a];
@@ -1108,18 +1111,20 @@ void TD_Renderer::outlineLoop(TD_RenderTarget &t, const ObjFrame &of, uint16_t l
   }
 }
 
-// TD_OUTLINE's ink pass for one front face, run after every fill of the
-// frame has landed: each loop edge draws at 2.0 iff it is a boundary edge,
-// a crease edge (baked flags), or a silhouette edge — the face across it is
-// not known front-facing this frame (a back neighbor, or UNKNOWN for a
-// near-skipped one, which isn't drawn and so makes this edge the boundary of
-// drawn geometry). every pixel is depth-tested against the frame's fills
-// (inkVisible) with a tolerance scaled by the face's steepest depth slope
-// per screen pixel, so a fill's pixel-center sampling around the line never
-// hides it while a real occluder in front still does. a crease between two
-// front faces draws once per
-// face, idempotent at 2.0; both-back and hidden crease edges are never
-// visited because back faces never reach the draw loop.
+// TD_OUTLINE's ink pass for one drawn face, run after every fill of the
+// frame has landed: each loop edge of a front face draws at 2.0 iff it is a
+// boundary edge, a crease edge (baked flags), or a silhouette edge — the
+// face across it is not known front-facing this frame (a back neighbor, or
+// UNKNOWN for a near-skipped one, which isn't drawn and so makes this edge
+// the boundary of drawn geometry). every pixel is depth-tested against the
+// frame's fills (inkVisible) with a tolerance scaled by the face's steepest
+// depth slope per screen pixel, so a fill's pixel-center sampling around the
+// line never hides it while a real occluder in front still does. a crease
+// between two drawn faces draws once per face, idempotent at 2.0. back faces
+// reach the draw loop only for a fill-less object: such a face draws its
+// boundary and crease edges alone, since its silhouette edges draw from the
+// front face across them; every other object's back-face edges are never
+// visited.
 void TD_Renderer::outlineClassifiedLoop(TD_RenderTarget &t, const ObjFrame &of, uint16_t face) {
   const TD_Mesh &msh = *of.mesh;
   const uint16_t *oppTab;
@@ -1147,10 +1152,11 @@ void TD_Renderer::outlineClassifiedLoop(TD_RenderTarget &t, const ObjFrame &of, 
   }
   // a flat face has no slope; the relative term absorbs interpolation noise
   const float tol = TD_OUTLINE_DEPTH_TOL_PX * slope + fabsf(faceZ_[of.faceBase + face]) * 1e-5f;
+  const bool back = faceFront_[of.faceBase + face] == TD_FACING_BACK;
   for (uint16_t k = 0; k < loopCount; ++k) {
     const uint16_t slot = (uint16_t)(loopStart + k);
     bool ink = flagTab[slot] != 0;  // crease or boundary
-    if (!ink) {
+    if (!ink && !back) {
       const uint16_t opp = oppTab[slot];
       ink = opp == TD_EDGE_NONE || faceFront_[of.faceBase + opp] != TD_FACING_FRONT;
     }

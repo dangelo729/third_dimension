@@ -20,7 +20,8 @@
 //   G1 (in-bounds)  every coordinate is inside [0,w) x [0,h) — targets may
 //                   skip bounds checks in hot loops.
 //   G2 (coverage)   every pixel covered by a front face is plotted, including
-//                   fully dark ones (painter overwrite needs it).
+//                   fully dark ones (painter overwrite needs it); a fill-less
+//                   object (TD_Object::setFill(false)) covers nothing.
 //   G3 (endpoints)  BLACK faces / SOLID outlines / CEL black ink arrive as
 //                   shade 0.0 exactly; WHITE faces / SOLID fills / WIREFRAME
 //                   lines / CEL white ink as 2.0; LIT Gouraud shades are

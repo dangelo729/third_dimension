@@ -13,6 +13,27 @@ releases may break API; breaks are called out under a "Breaking" heading.
 
 ### Added
 
+- **Fill-less objects: `TD_Object::setFill(false)`.** The object fills nothing and
+  records no depth, in any mode, so it hides nothing; its edges draw as the mode draws
+  lines — classified ink under `TD_OUTLINE`, true-edge outlines under `TD_SOLID` and
+  `TD_CEL`, front edges under `TD_WIREFRAME`, nothing under `TD_SHADED`. Under
+  `TD_OUTLINE` its back faces get draw records too (counted by `lastDrawCount()`), and the
+  ink pass draws their crease and boundary edges — never a silhouette, which draws from
+  the front face across it — so the far side of a glass shows through the near, while
+  every one of its lines is depth-tested against the frame's fills as any line is: water
+  inside the glass hides the far lines it stands in front of. For containers drawn as
+  glass. Fill and ink are independent: fill off and ink on is the glass, both off draws
+  nothing and still counts for the camera's fit. While it inks, its mesh needs its edge
+  table, so `prebuildOutline` and the prepare stage build it as for any object. Default
+  `true`. **No golden pins moved** — purely additive: filled objects and the other modes
+  take no new draw records, so every scene without a fill-less object sorts and draws
+  exactly as before. Tested in the outline suite (O6e): a glass box hides none of a
+  sphere inside it; it inks all the filled box inks and the middles of the three edges at
+  its far corner, which the filled box hides; a glass sphere inks its contour alone; a
+  filled sphere in front of the far corner hides the far edges inside its disc and none
+  outside; under `TD_SOLID` and `TD_CEL` it plots only dark true edges, under
+  `TD_SHADED` nothing, under `TD_WIREFRAME` the filled box's frame; with its ink off too
+  it plots nothing in any mode; and `prebuildOutline` takes it beside a line group.
 - **Headless editor export: `tools/editor_bake.js`.** Runs `tools/editor.html`'s own
   export — its DOM-free `td-core` script, lifted out of the page: `parseProjectText` →
   `bake` → `emitHeader` — under the `jsc` shell every Mac ships, or under node. The

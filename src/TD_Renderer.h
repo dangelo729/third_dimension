@@ -117,7 +117,8 @@ class TD_Renderer {
   uint32_t lastNearSkipCount() const { return lastSkipped_; }  // faces near-skipped
 
  private:
-  // one draw record per visible face, all objects pooled, painter-sorted by
+  // one draw record per visible face (and, under TD_OUTLINE, per back face of
+  // a fill-less object, for its ink), all objects pooled, painter-sorted by
   // (grp asc, z desc, obj, face) — the trailing tie-breaks make qsort output
   // deterministic across libcs (multi-object scenes make exact z ties common:
   // instances of one mesh, coplanar tiles).
@@ -140,6 +141,7 @@ class TD_Renderer {
     uint16_t baseColor, objectIdx;
     uint8_t material;     // whole-object TD_Material override
     bool ink;             // false: no edge of this object is ever drawn
+    bool fill;            // false: no face of this object fills or records depth
     uint8_t group;        // its line group, 0 for none
   };
 
@@ -229,7 +231,8 @@ class TD_Renderer {
 
   // TD_OUTLINE internals: cache lookup/build, and the classified ink pass —
   // one face's loop edges drawn at 2.0 iff boundary, crease, or silhouette
-  // (the neighbor across the edge is not known front-facing), each pixel
+  // (the neighbor across the edge is not known front-facing; a back face, a
+  // fill-less object's, draws its boundary and crease edges only), each pixel
   // depth-tested against the frame's fills. bakedEdges() is the handed-in
   // table for `mesh` while it applies, else nullptr.
   bool ensureEdgeTable(const TD_Mesh &mesh);
