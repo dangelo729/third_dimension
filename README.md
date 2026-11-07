@@ -1,8 +1,8 @@
 # ThirdDimension
 
-[![CI](https://github.com/GITHUB_USER/ThirdDimension/actions/workflows/ci.yml/badge.svg)](https://github.com/GITHUB_USER/ThirdDimension/actions/workflows/ci.yml)
+[![CI](https://github.com/dangelo729/third_dimension/actions/workflows/ci.yml/badge.svg)](https://github.com/dangelo729/third_dimension/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Arduino Lint](https://img.shields.io/badge/arduino--lint-strict-teal.svg)](https://github.com/GITHUB_USER/ThirdDimension/actions/workflows/ci.yml)
+[![Arduino Lint](https://img.shields.io/badge/arduino--lint-strict-teal.svg)](https://github.com/dangelo729/third_dimension/actions/workflows/ci.yml)
 
 **Adafruit_GFX for 3D** — a tiny scene-based 3D renderer for 32-bit microcontrollers.
 Spinning logos, model viewers, dashboards, and toys on small OLED/TFT displays, without
@@ -79,7 +79,7 @@ angles are radians.
 - **Arduino IDE:** Library Manager → search *ThirdDimension* (after registry
   publication). Until then: clone this repo into your sketchbook's `libraries/` folder.
 - **arduino-cli:** `arduino-cli lib install ThirdDimension` (after publication).
-- **PlatformIO:** `lib_deps = GITHUB_USER/ThirdDimension` (or the registry package once
+- **PlatformIO:** `lib_deps = https://github.com/dangelo729/third_dimension.git` (or the registry package once
   published).
 
 Include exactly one umbrella header per sketch:
