@@ -222,6 +222,19 @@ the dual of `obj.setInk(false)`, an occluder that fills (and under `TD_OUTLINE` 
 its depth) but never draws a line. The two switches are independent: with both off an
 object draws nothing and still counts for the camera's fit.
 
+For **per-pixel visibility across a composed frame**, `scene.setOutlineDepthTest(true)`
+(or the same on the `TD_Renderer` you compose with) depth-tests the fills too, not only
+the ink, in perspective-correct depth: a pixel is painted only where it is nearer than
+what is already there or ties with it, and a tie goes to the later draw, so a coplanar
+layer drawn later (squares on a board, marks on the squares) still covers the one
+beneath. Ink records its depth as well, and the depth persists across `renderPass()`
+calls, so passes composed into one frame occlude each other — and within one pass a big
+ground face no longer mis-sorts against a small object standing on it. `render()` clears
+it for its frame; when you compose passes yourself with `renderPass()`, call the
+renderer's `clearOutlineDepth()` once per frame before the first pass. It uses the
+outline depth buffer it always had (the same 4 B/pixel) and adds a compare per filled
+pixel. Off by default; without it the output is unchanged.
+
 ## More lights
 
 ```cpp

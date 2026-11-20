@@ -72,6 +72,9 @@ setOutlineEdges	KEYWORD2
 outlineCrease	KEYWORD2
 prebuildOutline	KEYWORD2
 invalidateOutline	KEYWORD2
+setOutlineDepthTest	KEYWORD2
+outlineDepthTest	KEYWORD2
+clearOutlineDepth	KEYWORD2
 lastStatus	KEYWORD2
 lastDrawCount	KEYWORD2
 lastNearSkipCount	KEYWORD2

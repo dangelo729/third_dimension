@@ -13,6 +13,41 @@ releases may break API; breaks are called out under a "Breaking" heading.
 
 ### Added
 
+- **Outline depth test: `TD_Renderer::setOutlineDepthTest(true)` and
+  `clearOutlineDepth()`.** Under `TD_OUTLINE`, per-pixel visibility across a whole
+  composed frame. The depth buffer holds perspective-correct depth, 1/z, which is exactly
+  screen-linear across a planar triangle (screen-linear z is off by up to a world unit
+  over a big face seen at a slant), and every fill pixel is depth-tested, not only the
+  ink: a pixel is painted where it is nearer than what the buffer holds or ties with it
+  within `TD_OUTLINE_DEPTH_TIE` (1e-5, relative; coplanar surfaces drawn from different
+  meshes disagree by at most 2.3e-6 over every pose measured), and a tie goes to the
+  later draw, so a coplanar layer drawn later — squares on a board, marks on the squares
+  — covers the one beneath exactly as the painter's order does. A span crosses the seam
+  once per run of passing pixels, at its flat shade with slope 0; a span that passes
+  whole makes the call it always made. Ink records its depth too — the far end of the
+  line's own tolerance, so a later coplanar layer still ties with it — so a farther
+  object drawn in a later pass does not erase a contour where it passes behind. The
+  buffer persists across `renderPass()` calls, so passes composed into one frame occlude
+  each other, and within one pass a big ground face no longer mis-sorts against a small
+  object on it. `render()` clears it for its frame; a caller composing passes calls
+  `clearOutlineDepth()` once per frame before the first; switching the test, a new depth
+  buffer, or a change of target size clears it too, always in a pass that draws
+  something (an empty pass leaves the clear pending and the buffer untouched). Line
+  groups hold across passes: once allocated, the group buffer clears with the depth and
+  every passing fill stamps its group. `scene.setOutlineDepthTest(on)` passes it
+  through. No memory beyond the outline depth buffer (the same 4 B/pixel); on the host
+  the fill span loop runs about a third slower with it. Default off. **No golden pins
+  moved** — purely additive: with the test off every path draws exactly as before.
+  Tested in the outline suite (O10a–g): composed passes occlude each other, fill and ink,
+  where by default the later pass draws over; a coplanar layer lands exactly the
+  default's pixels, in a later pass and in one pass, and covers an earlier layer's line
+  as by default; a square just behind a steep wall, where screen-linear depth is several
+  units off, is hidden whole, and one just in front draws as alone; a contour stays ink
+  over a fill drawn later behind it; the depth clears on `render()`,
+  `clearOutlineDepth()`, a clear left pending by an empty pass, and a target resize
+  either way, and an empty pass never touches an unsized or smaller buffer; one
+  `render()` draws the pinned K5 frame through the default's exact seam calls and fixes a
+  ground-plane mis-sort; and line groups hold across passes.
 - **Fill-less objects: `TD_Object::setFill(false)`.** The object fills nothing and
   records no depth, in any mode, so it hides nothing; its edges draw as the mode draws
   lines — classified ink under `TD_OUTLINE`, true-edge outlines under `TD_SOLID` and

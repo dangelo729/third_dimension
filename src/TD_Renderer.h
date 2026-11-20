@@ -34,7 +34,10 @@ struct TD_BakedEdgesEntry;    // TD_Renderer.cpp: baked tables handed in per mes
 // tessellated faces (interpenetration and occlusion cycles have no correct
 // draw order; large ground-plane faces mis-sort against small nearby
 // objects — subdivide them). the sort is deterministic with full tie-breaks
-// so output is a pure function of the input on every platform.
+// so output is a pure function of the input on every platform. under
+// TD_OUTLINE, setOutlineDepthTest(true) depth-tests the fills per pixel too,
+// in perspective-correct depth kept across the renderPass calls of a
+// composed frame, so visibility no longer rests on the sort.
 class TD_Renderer {
  public:
   TD_Renderer();
@@ -66,6 +69,22 @@ class TD_Renderer {
   void setOutlineCrease(float radians);
   float outlineCrease() const { return outlineCrease_; }
 
+  // TD_OUTLINE per-pixel visibility across a whole frame. on: the depth
+  // buffer holds perspective-correct depth (1/z), every fill pixel is
+  // depth-tested (nearer, or tied within TD_OUTLINE_DEPTH_TIE, passes: a tie
+  // goes to the later draw, so a coplanar layer drawn later still wins),
+  // every ink pixel drawn records its depth, and the buffer persists across
+  // renderPass calls, so passes composed into one frame occlude each other.
+  // render() clears it for its frame; a caller composing passes calls
+  // clearOutlineDepth() once per frame before the first. turning it on or
+  // off clears it at the next pass too. no other mode reads it. default
+  // false.
+  void setOutlineDepthTest(bool on);
+  bool outlineDepthTest() const { return outlineDepthTest_; }
+  // under setOutlineDepthTest(true): the depth buffer is cleared at the
+  // next pass that draws anything (an empty pass leaves the clear pending).
+  void clearOutlineDepth() { depthClearPending_ = true; }
+
   // optional setup-time build of the edge tables for every kept mesh in the
   // scene, so allocation failure is visible at init (the reserve() doctrine);
   // otherwise tables build lazily in the prepare stage of the first OUTLINE
@@ -93,8 +112,9 @@ class TD_Renderer {
   // init, not mid-run. sizing: 12 B/vertex + 17 B/face + ~108 B/object on
   // 32-bit MCUs (sizeof(ObjFrame): two 3x3 matrices, a translation, and
   // per-object attributes), summed over the largest scene. TD_OUTLINE adds
-  // 4 B per target pixel (its depth buffer), sized in the prepare stage from
-  // the target, not here.
+  // 4 B per target pixel (its depth buffer, the same with or without
+  // setOutlineDepthTest), sized in the prepare stage from the target, not
+  // here.
   bool reserve(uint32_t maxVerts, uint32_t maxFaces, uint16_t maxObjects);
   void releaseBuffers();
 
@@ -158,13 +178,25 @@ class TD_Renderer {
   ObjFrame *objs_ = nullptr;
   uint16_t capObj_ = 0;
   // TD_OUTLINE depth buffer: the nearest fill's view depth per target pixel,
-  // reset every outline frame; the ink pass tests each edge pixel against it.
+  // reset every outline pass; the ink pass tests each edge pixel against it.
+  // under setOutlineDepthTest(true) it holds 1/z instead (0 empty, larger
+  // nearer), fills and ink both write it, and it is reset only when
+  // depthClearPending_ reaches a non-empty pass.
   float *depth_ = nullptr;
   uint32_t capDepth_ = 0;
   // beside it, only in a frame with a line group: per pixel, the line group
   // of the fill that holds that depth, 0 for none or for the background.
+  // under the depth test it is reset with the depth, and once allocated,
+  // every fill that passes stamps it, in any pass.
   uint8_t *groups_ = nullptr;
   uint32_t capGroups_ = 0;
+  bool outlineDepthTest_ = false;
+  // under the depth test, a clear waiting for the next non-empty pass: set
+  // by render(), clearOutlineDepth(), a switch of the test, and a new depth
+  // buffer. a pass on a target whose dims differ from depthW_ x depthH_
+  // (those of the last clear) clears too.
+  bool depthClearPending_ = true;
+  int16_t depthW_ = 0, depthH_ = 0;
 
   // TD_OUTLINE edge-table cache: one entry per distinct mesh, keyed on the
   // mesh pointer plus a (nverts, nfaces, faceVertCount) checksum. built in
@@ -189,11 +221,16 @@ class TD_Renderer {
   // outline fill latches, valid only inside drawFrame: while depthOn_ the
   // fill interpolant is view depth, written per pixel, and the shade that
   // crosses the seam is the flat depthFlat_. while groupsOn_ (the frame has
-  // a line group) each depth written stamps depthGroup_.
+  // a line group) each depth written stamps depthGroup_. depthTestOn_ marks
+  // a pass under setOutlineDepthTest: the fill and ink interpolant is 1/z,
+  // and while groupsStamp_ (the group buffer covers the target) every fill
+  // pixel that passes stamps depthGroup_.
   bool depthOn_ = false;
   float depthFlat_ = 0.0f;
   bool groupsOn_ = false;
   uint8_t depthGroup_ = 0;
+  bool depthTestOn_ = false;
+  bool groupsStamp_ = false;
   float cullSign_ = 1.0f;
   uint8_t status_ = TD_OK;
   int16_t tw_ = 0, th_ = 0;  // target dims cached for the frame
@@ -214,7 +251,8 @@ class TD_Renderer {
   // rasterization: scanline fill sampling pixel centers, half-open
   // right/bottom (adjacent triangles neither crack nor double-draw); spans
   // cross the seam once each, except that cel banding may split a geometric
-  // span into several flat sub-spans, each crossing once; Bresenham lines
+  // span into several flat sub-spans, and the outline depth test into its
+  // runs of passing pixels, each crossing once; Bresenham lines
   // clamp endpoints to the TD_GUARD_BAND before integer conversion and keep
   // the per-pixel bounds funnel (the one place pixels could go out of
   // bounds).
@@ -223,9 +261,11 @@ class TD_Renderer {
   void fillSpan(TD_RenderTarget &t, int y, float xl, float xr, float sl, float sr);
   void celFillSpan(TD_RenderTarget &t, int y, float xl, float xr, float sl, float sr);
   void depthFillSpan(TD_RenderTarget &t, int y, float xl, float xr, float zl, float zr);
+  void depthTestFillSpan(TD_RenderTarget &t, int y, float xl, float xr, float wl, float wr);
   void drawLineShade(TD_RenderTarget &t, float x0, float y0, float x1, float y1, float shade);
   void drawLineDepth(TD_RenderTarget &t, float x0, float y0, float z0, float x1, float y1,
                      float z1, float tol, uint8_t group);
+  void inkDepthTested(TD_RenderTarget &t, int x, int y, float w, float tol, uint8_t group);
   void outlineLoop(TD_RenderTarget &t, const ObjFrame &of, uint16_t loopStart,
                    uint16_t loopCount, float shade);
 

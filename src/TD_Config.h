@@ -59,4 +59,10 @@
 // a line from hiding it while a real occluder in front still does.
 #define TD_OUTLINE_DEPTH_TOL_PX 1.5f
 
+// TD_OUTLINE depth test tie tolerance, relative: under setOutlineDepthTest a
+// fill pixel whose 1/z is within this fraction of the stored one counts as a
+// tie, and the later draw wins it, so a coplanar layer drawn later covers
+// the one beneath as the painter's order would.
+#define TD_OUTLINE_DEPTH_TIE 1e-5f
+
 #endif  // TD_CONFIG_H

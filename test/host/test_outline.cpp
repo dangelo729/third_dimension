@@ -5,7 +5,8 @@
 // pins the render path — golden frames identical across every dither method
 // (only the 0.0/2.0 endpoint shades ever reach the target), the library's
 // RGB565 outline pin, seam audits, feature-edge classification acceptance,
-// hidden-line removal, determinism, and the opt-out identity against K5.
+// hidden-line removal, determinism, the opt-out identity against K5, and the
+// opt-in depth test across composed passes (O10).
 //
 // naming note: "feature edges" / "contour" here — the suite already uses
 // "silhouette" to mean the covered-pixel footprint.
@@ -13,6 +14,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
+#include <initializer_list>
 
 #include "TD_Color565Target.h"
 #include "TD_Dither.h"
@@ -164,6 +166,86 @@ static long discCount(double cx, double cy, double r) {
       }
   return n;
 }
+
+// one frame composed of passes on one renderer, the way a caller composes
+// it: one beginFrame..endFrame bracket, clearOutlineDepth() before the
+// first pass, each pass a scene drawn with its own camera.
+static void composeTo(TD_Renderer &r, TD_RenderTarget &t,
+                      std::initializer_list<TD_Scene *> passes) {
+  clearFb();
+  r.setMode(TD_OUTLINE);
+  CHECK(t.beginFrame(), "compose: beginFrame failed");
+  r.clearOutlineDepth();
+  int i = 0;
+  for (TD_Scene *s : passes) {
+    CHECK(r.renderPass(*s, s->camera, t), "compose: pass %d failed (status %d)", i,
+          (int)r.lastStatus());
+    ++i;
+  }
+  t.endFrame();
+}
+
+// a pixel whose whole 3x3 neighborhood is lit in `m`, and one whose 3x3
+// neighborhood holds no lit pixel of it: inside and outside a footprint,
+// a pixel's width clear of its edge.
+static bool allLit3(const uint8_t (*m)[W], int x, int y) {
+  for (int dy = -1; dy <= 1; ++dy)
+    for (int dx = -1; dx <= 1; ++dx) {
+      const int px = x + dx, py = y + dy;
+      if (px < 0 || px >= W || py < 0 || py >= H || !m[py][px]) return false;
+    }
+  return true;
+}
+static bool noneLit3(const uint8_t (*m)[W], int x, int y) {
+  for (int dy = -1; dy <= 1; ++dy)
+    for (int dx = -1; dx <= 1; ++dx) {
+      const int px = x + dx, py = y + dy;
+      if (px >= 0 && px < W && py >= 0 && py < H && m[py][px]) return false;
+    }
+  return true;
+}
+
+// FNV-1a over every call a render makes across the seam, in order, floats
+// by their bits: two renders that hash alike made the same calls.
+struct SeamLog : TD_RenderTarget {
+  uint64_t h = 1469598103934665603ULL;
+  long spans = 0;
+  void mix(const void *p, size_t n) {
+    const uint8_t *b = (const uint8_t *)p;
+    for (size_t i = 0; i < n; ++i) {
+      h ^= b[i];
+      h *= 1099511628211ULL;
+    }
+  }
+  int16_t width() override { return W; }
+  int16_t height() override { return H; }
+  void setMaterial(const TD_MaterialCtx &ctx) override {
+    const uint8_t tag = 'm';
+    mix(&tag, 1);
+    mix(&ctx.mat, sizeof ctx.mat);
+    mix(&ctx.objectIdx, sizeof ctx.objectIdx);
+    mix(&ctx.faceIdx, sizeof ctx.faceIdx);
+  }
+  void plotShade(int16_t x, int16_t y, float shade) override {
+    const uint8_t tag = 'p';
+    mix(&tag, 1);
+    mix(&x, sizeof x);
+    mix(&y, sizeof y);
+    mix(&shade, sizeof shade);
+  }
+  void plotShadeSpan(int16_t y, int16_t xs, int16_t xe, float leftEdgeX, float leftShade,
+                     float shadeSlope) override {
+    const uint8_t tag = 's';
+    ++spans;
+    mix(&tag, 1);
+    mix(&y, sizeof y);
+    mix(&xs, sizeof xs);
+    mix(&xe, sizeof xe);
+    mix(&leftEdgeX, sizeof leftEdgeX);
+    mix(&leftShade, sizeof leftShade);
+    mix(&shadeSlope, sizeof shadeSlope);
+  }
+};
 
 // 4-connected flood of unlit pixels from the frame border; true if it reaches
 // (x, y). an 8-connected closed ink ring keeps the flood out of its interior,
@@ -1196,6 +1278,574 @@ void runOutlineTests() {
     uint64_t hsh = fbHash();
     CHECK(hsh == K5_BAYER8, "outline knobs leaked into TD_SHADED: 0x%llxULL != K5 0x%llxULL",
           (unsigned long long)hsh, (unsigned long long)K5_BAYER8);
+  }
+
+  // ---- O10a. the depth test: composed passes occlude each other ----
+  // a box near the eye in one pass, a white sphere behind it in the next,
+  // one renderer, one frame. by default the later pass draws over the
+  // earlier wherever it covers. under setOutlineDepthTest the sphere's fill
+  // and ink are hidden inside the box's footprint, which keeps the box's
+  // own frame, and draw as by default outside it; every seam call stays on
+  // the 0.0/2.0 endpoints at slope +0.0f, in bounds.
+  {
+    TD_BoxMesh boxMesh;
+    TD_SphereMesh sphereMesh;
+    static uint8_t nearF[H][W], farF[H][W], foot[H][W], plain[H][W];
+    TD_Scene nearS, farS;
+    TD_Object box(boxMesh), ball(sphereMesh);
+    nearS.add(box);
+    farS.add(ball);
+    setLegacyCamera(nearS.camera);
+    setLegacyCamera(farS.camera);
+    box.setScale(1.3f);
+    box.setRotation(TILT, 0.7f, 0.0f);
+    box.setPosition(-0.4f, 0.0f, -0.8f);
+    ball.setScale(1.4f);
+    ball.setPosition(0.9f, 0.1f, 1.5f);
+    ball.setMaterial(TD_MATERIAL_WHITE);
+    TD_Renderer r;
+    CHECK(!r.outlineDepthTest() && !nearS.outlineDepthTest(), "the depth test must default off");
+    composeTo(r, target, {&nearS});
+    std::memcpy(nearF, fb, sizeof fb);
+    composeTo(r, target, {&farS});
+    std::memcpy(farF, fb, sizeof fb);
+    box.setInk(false);
+    renderToChecked(nearS, target, TD_SOLID);  // the box's footprint: its inkless solid fill
+    std::memcpy(foot, fb, sizeof fb);
+    box.setInk(true);
+    composeTo(r, target, {&nearS, &farS});
+    std::memcpy(plain, fb, sizeof fb);
+    r.setOutlineDepthTest(true);
+    CHECK(r.outlineDepthTest(), "setOutlineDepthTest must round-trip");
+    composeTo(r, target, {&nearS, &farS});
+    long plainOff = 0, through = 0, in = 0, inOff = 0, out = 0, outOff = 0;
+    for (int y = 0; y < H; ++y)
+      for (int x = 0; x < W; ++x) {
+        plainOff += plain[y][x] != (farF[y][x] ? 1 : nearF[y][x]);
+        if (allLit3(foot, x, y)) {
+          ++in;
+          inOff += fb[y][x] != nearF[y][x];
+          through += plain[y][x] != nearF[y][x];
+        } else if (noneLit3(foot, x, y)) {
+          out += farF[y][x] != 0;
+          outOff += fb[y][x] != plain[y][x];
+        }
+      }
+    CHECK(plainOff == 0 && through > 20,
+          "by default the later pass must draw over the earlier (%ld px off; %ld through the box)",
+          plainOff, through);
+    CHECK(in > 50 && inOff == 0,
+          "under the depth test the box's footprint must hold the box alone (%ld of %ld px differ)",
+          inOff, in);
+    CHECK(out > 20 && outOff == 0,
+          "under the depth test the sphere must draw as ever outside the box (%ld px differ; %ld sphere px)",
+          outOff, out);
+    static OutlineSeamRecorder rec;
+    rec.reset();
+    composeTo(r, rec, {&nearS, &farS});
+    CHECK(rec.spanCalls > 0 && rec.plotCalls > 0, "depth-tested seam audit saw no spans or plots");
+    CHECK(rec.badShade == 0 && rec.badSlope == 0 && rec.badMat == 0 && rec.oob == 0,
+          "depth-tested seam calls off the contract (%d shade, %d slope, %d mat, %d oob)",
+          rec.badShade, rec.badSlope, rec.badMat, rec.oob);
+  }
+
+  // ---- O10b. the depth test: a coplanar layer drawn later wins ----
+  // a board of two huge fan triangles and small white squares lying on it,
+  // each square its own object: drawn in a later pass, and in one pass
+  // where the near squares sort after the board and the far ones before
+  // it, the depth test lands every square pixel the painter's order lands,
+  // so the frames match the default's exactly. and a later layer covers an
+  // earlier layer's line as the painter's order does: dark squares flush
+  // with the inked board's edges, in a later pass, leave the frame the
+  // default leaves.
+  {
+    TD_PlaneMesh boardMesh(1, 1, 8.0f, 8.0f), squareMesh(1, 1, 0.6f, 0.6f);
+    static uint8_t off[H][W];
+    const float spots[6][2] = {{-2.2f, -2.4f}, {1.5f, -1.0f}, {-0.5f, -0.4f},
+                               {2.3f, 1.6f},   {-1.8f, 2.4f}, {0.4f, 3.1f}};
+    auto lookDown = [](TD_Camera &cam) {
+      cam.lookAt({0.0f, 5.0f, -8.0f}, {0.0f, 0.0f, 0.0f});
+      cam.setFocalPixels(70.0f);
+      cam.setCenterPixels(W * 0.5f, H * 0.5f);
+      cam.setNearSkip(0.25f);
+    };
+    TD_Scene boardS, squaresS, oneS;
+    TD_Object board(boardMesh), boardToo(boardMesh);
+    TD_Object sq[6] = {TD_Object(squareMesh), TD_Object(squareMesh), TD_Object(squareMesh),
+                       TD_Object(squareMesh), TD_Object(squareMesh), TD_Object(squareMesh)};
+    TD_Object sqToo[6] = {TD_Object(squareMesh), TD_Object(squareMesh), TD_Object(squareMesh),
+                          TD_Object(squareMesh), TD_Object(squareMesh), TD_Object(squareMesh)};
+    boardS.add(board);
+    oneS.add(boardToo);
+    board.setInk(false);
+    boardToo.setInk(false);
+    for (int i = 0; i < 6; ++i) {
+      for (TD_Object *o : {&sq[i], &sqToo[i]}) {
+        o->setPosition(spots[i][0], 0.0f, spots[i][1]);
+        o->setMaterial(TD_MATERIAL_WHITE);
+        o->setInk(false);
+      }
+      squaresS.add(sq[i]);
+      oneS.add(sqToo[i]);
+    }
+    lookDown(boardS.camera);
+    lookDown(squaresS.camera);
+    lookDown(oneS.camera);
+    TD_Renderer r;
+    composeTo(r, target, {&boardS, &squaresS});
+    std::memcpy(off, fb, sizeof fb);
+    const long litTwo = stats().count;
+    r.setOutlineDepthTest(true);
+    composeTo(r, target, {&boardS, &squaresS});
+    CHECK(litTwo > 30 && std::memcmp(off, fb, sizeof fb) == 0,
+          "a coplanar layer in a later pass must land as by default (%ld px by default, %ld tested)",
+          litTwo, stats().count);
+    r.setOutlineDepthTest(false);
+    composeTo(r, target, {&oneS});
+    std::memcpy(off, fb, sizeof fb);
+    const long litOne = stats().count;
+    r.setOutlineDepthTest(true);
+    composeTo(r, target, {&oneS});
+    CHECK(litOne > 10 && litOne < litTwo && std::memcmp(off, fb, sizeof fb) == 0,
+          "a coplanar layer in one pass must land as the sort lands it (%ld px by default, %ld tested, %ld in two passes)",
+          litOne, stats().count, litTwo);
+
+    // dark squares flush with the board's side and back edges, over its
+    // boundary ink
+    TD_PlaneMesh edgeMesh(1, 1, 1.2f, 1.2f);
+    const float edges[9][2] = {{-3.4f, -1.5f}, {-3.4f, 0.5f}, {-3.4f, 2.5f},
+                               {3.4f, -2.5f},  {3.4f, -0.5f}, {3.4f, 1.5f},
+                               {-2.5f, 3.4f},  {-0.5f, 3.4f}, {1.5f, 3.4f}};
+    TD_Scene edgeS;
+    TD_Object ed[9] = {TD_Object(edgeMesh), TD_Object(edgeMesh), TD_Object(edgeMesh),
+                       TD_Object(edgeMesh), TD_Object(edgeMesh), TD_Object(edgeMesh),
+                       TD_Object(edgeMesh), TD_Object(edgeMesh), TD_Object(edgeMesh)};
+    for (int i = 0; i < 9; ++i) {
+      ed[i].setPosition(edges[i][0], 0.0f, edges[i][1]);
+      ed[i].setInk(false);
+      edgeS.add(ed[i]);
+    }
+    lookDown(edgeS.camera);
+    board.setInk(true);
+    static uint8_t lines[H][W];
+    r.setOutlineDepthTest(false);
+    composeTo(r, target, {&boardS});
+    std::memcpy(lines, fb, sizeof fb);
+    composeTo(r, target, {&boardS, &edgeS});
+    std::memcpy(off, fb, sizeof fb);
+    long covered = 0;
+    for (int y = 0; y < H; ++y)
+      for (int x = 0; x < W; ++x) covered += lines[y][x] == 1 && off[y][x] == 0;
+    r.setOutlineDepthTest(true);
+    composeTo(r, target, {&boardS, &edgeS});
+    CHECK(covered > 10 && std::memcmp(off, fb, sizeof fb) == 0,
+          "a later coplanar layer must cover an earlier line as by default (%ld line px covered)",
+          covered);
+  }
+
+  // ---- O10c. the depth test: perspective-correct depth ----
+  // a wall of two huge triangles receding to the right from 1.2 to 17
+  // units, and a small white square facing the eye in a later pass, once
+  // just behind the wall and once just in front of it. depth interpolated
+  // linearly in screen space puts the wall far behind where it is at the
+  // square, past the square behind it; 1/z is exact for a plane, so the
+  // square behind is hidden whole, fill and ink, and the one in front draws
+  // exactly as alone.
+  {
+    const float th = 0.35f;  // the wall's yaw off the view axis
+    static float wv[4][3];
+    const float wallS[4] = {-3.0f, 14.0f, 14.0f, -3.0f}, wallY[4] = {-3.0f, -3.0f, 3.0f, 3.0f};
+    for (int i = 0; i < 4; ++i) {
+      wv[i][0] = wallS[i] * sinf(th);
+      wv[i][1] = wallY[i];
+      wv[i][2] = 4.0f + wallS[i] * cosf(th);
+    }
+    static const uint16_t qt[2][3] = {{0, 2, 1}, {0, 3, 2}};
+    static const float qn[6][3] = {{0, 0, -1}, {0, 0, -1}, {0, 0, -1},
+                                   {0, 0, -1}, {0, 0, -1}, {0, 0, -1}};
+    static const uint16_t qf[1][4] = {{0, 2, 0, 4}};
+    static const uint16_t ql[4] = {0, 3, 2, 1};
+    const TD_Mesh wallMesh = {wv, qt, qn, qf, ql, nullptr, 4, 2, 1, 4, 20.0f};
+    const float hs = 0.1f;  // the square's half side
+    static const float sv[4][3] = {{-0.1f, -0.1f, 0}, {0.1f, -0.1f, 0}, {0.1f, 0.1f, 0},
+                                   {-0.1f, 0.1f, 0}};
+    const TD_Mesh squareMesh = {sv, qt, qn, qf, ql, nullptr, 4, 2, 1, 4, 0.15f};
+    auto lookAhead = [](TD_Camera &cam) {
+      cam.lookAt({0.0f, 0.0f, 0.0f}, {0.0f, 0.0f, 1.0f});
+      cam.setFocalPixels(40.0f);
+      cam.setCenterPixels(W * 0.5f, H * 0.5f);
+      cam.setNearSkip(0.5f);
+    };
+    TD_Scene wallS2, squareS;
+    TD_Object wall(wallMesh), square(squareMesh);
+    wallS2.add(wall);
+    squareS.add(square);
+    wall.setInk(false);
+    square.setMaterial(TD_MATERIAL_WHITE);
+    lookAhead(wallS2.camera);
+    lookAhead(squareS.camera);
+    TD_Renderer r;
+    r.setOutlineDepthTest(true);
+    composeTo(r, target, {&wallS2});
+    CHECK(r.lastDrawCount() == 1 && stats().count == 0, "the wall must draw, dark and inkless");
+
+    // the wall's depth through a screen point: exact (the ray onto its
+    // plane) and as screen-linear interpolation over its triangles would
+    // have it, both in double from the camera the pass resolved
+    const TD_Camera &cam = wallS2.camera;
+    const double f = cam.focalPixels(), cx = cam.centerX(), cy = cam.centerY();
+    auto exactZ = [&](double px, double py) {
+      const TD_Vec3 R = cam.right(), U = cam.up(), F = cam.forward(), E = cam.eye();
+      const double vx = (px - cx) / f, vy = -(py - cy) / f;
+      const double dx = R.x * vx + U.x * vy + F.x, dz = R.z * vx + U.z * vy + F.z;
+      const double nx = cos(th), nz = -sin(th);  // the wall's normal, in xz
+      return (nx * (0.0 - E.x) + nz * (4.0 - E.z)) / (nx * dx + nz * dz);
+    };
+    auto linearZ = [&](double px, double py) {
+      double sx[4], sy[4], sz[4];
+      for (int i = 0; i < 4; ++i) {
+        const TD_Vec3 v = cam.worldToView({wv[i][0], wv[i][1], wv[i][2]});
+        sx[i] = cx + f * v.x / v.z;
+        sy[i] = cy - f * v.y / v.z;
+        sz[i] = v.z;
+      }
+      for (int k = 0; k < 2; ++k) {
+        const int a = qt[k][0], b = qt[k][1], c = qt[k][2];
+        const double d = (sy[b] - sy[c]) * (sx[a] - sx[c]) + (sx[c] - sx[b]) * (sy[a] - sy[c]);
+        const double l0 = ((sy[b] - sy[c]) * (px - sx[c]) + (sx[c] - sx[b]) * (py - sy[c])) / d;
+        const double l1 = ((sy[c] - sy[a]) * (px - sx[c]) + (sx[a] - sx[c]) * (py - sy[c])) / d;
+        const double l2 = 1.0 - l0 - l1;
+        if (l0 >= 0.0 && l1 >= 0.0 && l2 >= 0.0) return l0 * sz[a] + l1 * sz[b] + l2 * sz[c];
+      }
+      return 0.0;
+    };
+
+    const double pc = 44.5;  // the square's center column on screen, on the center row
+    const float zBehind = 2.05f, zFront = 1.45f;
+    for (int behind = 0; behind < 2; ++behind) {
+      const float zq = behind ? zBehind : zFront;
+      const double half = f * hs / zq;  // the square's half width in pixels
+      square.setPosition((float)((pc - cx) / f) * zq, 0.0f, zq);
+      static uint8_t alone[H][W];
+      composeTo(r, target, {&squareS});
+      std::memcpy(alone, fb, sizeof fb);
+      const long aloneLit = stats().count;
+      composeTo(r, target, {&wallS2, &squareS});
+      if (behind) {
+        // behind the wall by a margin across its whole footprint and one
+        // pixel round it, yet nearer than the linear depth at its center
+        const double zFar = exactZ(pc + half + 1.5, cy), zMid = exactZ(pc, cy);
+        const double zLin = linearZ(pc, cy);
+        CHECK(zq > zFar && zLin - zMid > zq - zMid,
+              "premise: square behind the wall (%.3f > %.3f) by less than the linear error (%.3f vs %.3f)",
+              zq, zFar, zLin - zMid, zq - zMid);
+        CHECK(aloneLit > 10 && stats().count == 0,
+              "a square just behind the wall must be hidden whole (%ld of %ld px lit)",
+              stats().count, aloneLit);
+      } else {
+        const double zNear = exactZ(pc - half - 1.5, cy);
+        CHECK(zq < zNear, "premise: square in front of the wall (%.3f < %.3f)", zq, zNear);
+        CHECK(aloneLit > 10 && std::memcmp(alone, fb, sizeof fb) == 0,
+              "a square just in front of the wall must draw as alone (%ld px alone, %ld)", aloneLit,
+              stats().count);
+      }
+    }
+  }
+
+  // ---- O10d. the depth test: ink records its depth ----
+  // a sphere's contour in one pass, then a big dark box far behind it in
+  // the next, covering it. about half the contour's pixels lie outside the
+  // sphere's fill, where only the line itself is near; every one of them
+  // over the box is still ink afterwards. by default the box's fill erases
+  // them.
+  {
+    TD_SphereMesh sphereMesh;
+    TD_BoxMesh boxMesh;
+    static uint8_t ring[H][W], foot[H][W];
+    TD_Scene nearS, farS;
+    TD_Object ball(sphereMesh), box(boxMesh);
+    nearS.add(ball);
+    farS.add(box);
+    setLegacyCamera(nearS.camera);
+    setLegacyCamera(farS.camera);
+    ball.setScale(1.2f);
+    ball.setPosition(0.0f, 0.0f, -0.5f);
+    box.setScale(3.0f);
+    box.setRotation(0.2f, 0.3f, 0.0f);
+    box.setPosition(0.3f, 0.2f, 2.5f);
+    box.setInk(false);
+    TD_Renderer r;
+    r.setOutlineDepthTest(true);
+    composeTo(r, target, {&nearS});
+    std::memcpy(ring, fb, sizeof fb);
+    renderToChecked(farS, target, TD_SOLID);  // the box's footprint
+    std::memcpy(foot, fb, sizeof fb);
+    long over = 0, lost = 0;
+    composeTo(r, target, {&nearS, &farS});
+    for (int y = 0; y < H; ++y)
+      for (int x = 0; x < W; ++x)
+        if (ring[y][x] && foot[y][x]) {
+          ++over;
+          lost += fb[y][x] != 1;
+        }
+    CHECK(over > 20 && lost == 0,
+          "a line must stay ink over a fill drawn later behind it (%ld of %ld px lost)", lost, over);
+    r.setOutlineDepthTest(false);
+    composeTo(r, target, {&nearS, &farS});
+    CHECK(stats().count == 0, "by default the later fill erases the line (%ld px left)",
+          stats().count);
+  }
+
+  // ---- O10e. the depth test: when the depth clears ----
+  // the box of O10a, then the white sphere behind it: a frame of the sphere
+  // alone must equal the sphere drawn by a fresh renderer whenever the depth
+  // was cleared in between — by render(), by clearOutlineDepth() before the
+  // pass, by clearOutlineDepth() before an empty pass and then the pass (on
+  // a renderer whose depth was never sized, and on one whose buffer is
+  // smaller than this target: the empty pass must not touch it), and by a
+  // change of target size, growing or shrinking. without a clear the
+  // depth persists across frames and hides part of the sphere.
+  {
+    TD_BoxMesh boxMesh;
+    TD_SphereMesh sphereMesh;
+    static uint8_t farAlone[H][W], farSmall[H][W];
+    const int SW = 64, SH = 16;  // the small target, in fb's top-left
+    TD_MonoTarget small(tdTestPlot, nullptr, (int16_t)SW, (int16_t)SH);
+    TD_Scene nearS, farS, emptyS, nearSmall, farSmallS;
+    TD_Object box(boxMesh), ball(sphereMesh), boxS(boxMesh), ballS(sphereMesh);
+    nearS.add(box);
+    farS.add(ball);
+    nearSmall.add(boxS);
+    farSmallS.add(ballS);
+    for (TD_Scene *s : {&nearS, &farS, &emptyS}) setLegacyCamera(s->camera);
+    for (TD_Scene *s : {&nearSmall, &farSmallS}) {
+      setLegacyCamera(s->camera);
+      s->camera.setCenterPixels(SW * 0.5f, SH * 0.5f);
+    }
+    for (TD_Object *o : {&box, &boxS}) {
+      o->setScale(1.3f);
+      o->setRotation(TILT, 0.7f, 0.0f);
+      o->setPosition(-0.4f, 0.0f, -0.8f);
+    }
+    for (TD_Object *o : {&ball, &ballS}) {
+      o->setScale(1.4f);
+      o->setPosition(0.9f, 0.1f, 1.5f);
+      o->setMaterial(TD_MATERIAL_WHITE);
+    }
+    {
+      TD_Renderer fresh;
+      fresh.setOutlineDepthTest(true);
+      composeTo(fresh, target, {&farS});
+      std::memcpy(farAlone, fb, sizeof fb);
+      composeTo(fresh, small, {&farSmallS});
+      std::memcpy(farSmall, fb, sizeof fb);
+    }
+    auto sameAs = [](const uint8_t (*want)[W]) { return std::memcmp(want, fb, sizeof fb) == 0; };
+    auto frame = [&](TD_Renderer &r, TD_RenderTarget &t, TD_Scene &s, bool clear) {
+      clearFb();
+      CHECK(t.beginFrame(), "beginFrame failed");
+      if (clear) r.clearOutlineDepth();
+      CHECK(r.renderPass(s, s.camera, t), "renderPass failed (status %d)", (int)r.lastStatus());
+      t.endFrame();
+    };
+
+    TD_Renderer r;
+    r.setMode(TD_OUTLINE);
+    r.setOutlineDepthTest(true);
+    frame(r, target, nearS, true);
+    frame(r, target, farS, false);
+    CHECK(!sameAs(farAlone), "without a clear the depth must persist into the next frame");
+
+    clearFb();
+    CHECK(r.render(nearS, nearS.camera, target) && r.render(farS, farS.camera, target),
+          "render failed");
+    CHECK(sameAs(farAlone), "render() must clear the depth for its frame");
+
+    frame(r, target, nearS, true);
+    frame(r, target, farS, true);
+    CHECK(sameAs(farAlone), "clearOutlineDepth() must clear the depth at the next pass");
+
+    frame(r, target, nearS, true);
+    clearFb();
+    CHECK(target.beginFrame(), "beginFrame failed");
+    r.clearOutlineDepth();
+    CHECK(r.renderPass(emptyS, emptyS.camera, target), "an empty pass must succeed");
+    CHECK(r.renderPass(farS, farS.camera, target), "renderPass failed");
+    target.endFrame();
+    CHECK(sameAs(farAlone), "a clear before an empty pass must land on the next pass");
+
+    {
+      TD_Renderer unsized;  // working buffers, no depth buffer yet
+      unsized.setMode(TD_OUTLINE);
+      unsized.setOutlineDepthTest(true);
+      CHECK(unsized.reserve(64, 64, 4), "reserve failed");
+      frame(unsized, target, emptyS, true);
+      frame(unsized, target, farS, false);
+      CHECK(sameAs(farAlone), "an empty first pass must leave an unsized depth alone");
+    }
+    {
+      TD_Renderer smaller;  // a depth buffer sized for the small target
+      smaller.setMode(TD_OUTLINE);
+      smaller.setOutlineDepthTest(true);
+      frame(smaller, small, nearSmall, true);
+      frame(smaller, target, emptyS, true);
+      frame(smaller, target, farS, false);
+      CHECK(sameAs(farAlone), "an empty pass must not clear a depth buffer smaller than its target");
+    }
+
+    frame(r, small, nearSmall, true);
+    frame(r, target, farS, false);
+    CHECK(sameAs(farAlone), "a larger target must not see the smaller frame's depth");
+    frame(r, target, nearS, true);
+    frame(r, small, farSmallS, false);
+    CHECK(sameAs(farSmall), "a smaller target must not see the larger frame's depth");
+  }
+
+  // ---- O10f. the depth test in one render() ----
+  // where the painter's order is right the depth test changes nothing: the
+  // K5 barrel draws the pinned O1 frame, through exactly the seam calls the
+  // default makes (every span passes whole). where it is wrong the depth
+  // test is right: a white box over the far half of a ground of two huge
+  // triangles sorts before the ground (its mean depth is farther) and by
+  // default the ground covers its fill; under the depth test it draws
+  // exactly as alone.
+  {
+    TD_Scene scene;
+    TD_Object obj(barrel_mesh);
+    setupK5(scene, obj);
+    scene.setOutlineDepthTest(true);
+    CHECK(scene.outlineDepthTest(), "the scene's setOutlineDepthTest must reach its renderer");
+    renderToChecked(scene, target, TD_OUTLINE);
+    CHECK(fbHash() == 0xef57e91044e89d75ULL,
+          "under the depth test the K5 barrel must draw the pinned outline frame (0x%llxULL)",
+          (unsigned long long)fbHash());
+    SeamLog tested, plainLog;
+    CHECK(scene.renderer().render(scene, scene.camera, tested), "seam log render failed");
+    scene.setOutlineDepthTest(false);
+    CHECK(scene.renderer().render(scene, scene.camera, plainLog), "seam log render failed");
+    CHECK(tested.spans > 0 && tested.h == plainLog.h && tested.spans == plainLog.spans,
+          "where every span passes, the depth test must make the default's seam calls (%ld vs %ld spans)",
+          tested.spans, plainLog.spans);
+
+    TD_PlaneMesh groundMesh(1, 1, 12.0f, 12.0f);
+    TD_BoxMesh boxMesh;
+    static uint8_t alone[H][W];
+    TD_Scene world;
+    TD_Object ground(groundMesh), box(boxMesh);
+    world.add(ground);
+    world.add(box);
+    world.camera.lookAt({0.0f, 4.0f, -3.0f}, {0.0f, -0.5f, 2.5f});
+    world.camera.setFocalPixels(80.0f);
+    world.camera.setCenterPixels(W * 0.5f, H * 0.5f);
+    world.camera.setNearSkip(0.25f);
+    ground.setPosition(0.0f, -0.5f, 0.0f);
+    ground.setInk(false);
+    box.setPosition(0.0f, 0.05f, 2.5f);  // a hair above the ground
+    box.setMaterial(TD_MATERIAL_WHITE);
+    ground.setVisible(false);
+    renderToChecked(world, target, TD_OUTLINE);
+    std::memcpy(alone, fb, sizeof fb);
+    const long aloneLit = stats().count;
+    ground.setVisible(true);
+    renderToChecked(world, target, TD_OUTLINE);
+    const long plainLit = stats().count;
+    world.setOutlineDepthTest(true);
+    renderToChecked(world, target, TD_OUTLINE);
+    CHECK(plainLit < aloneLit / 2,
+          "premise: by default the ground must cover the box's fill (%ld of %ld px lit)", plainLit,
+          aloneLit);
+    CHECK(aloneLit > 50 && std::memcmp(alone, fb, sizeof fb) == 0,
+          "under the depth test the box on the ground must draw as alone (%ld px alone, %ld)",
+          aloneLit, stats().count);
+  }
+
+  // ---- O10g. the depth test keeps line groups across passes ----
+  // the O6d pair, a ball sunk into a bigger one, both in one group, drawn
+  // in two passes: the small ball's rim floating over the big one's face
+  // does not ink where the big one shows, as in one pass, while ungrouped
+  // it does. and every fill that passes stamps its group, a pass without a
+  // group too: a box outside the group, in front of the big ball in a
+  // second pass, takes the big ball's stamp from under it, so a member in
+  // front of the box, in a third pass, inks its contour over the box the
+  // same whether the big ball is in its group or another.
+  {
+    TD_SphereMesh bigMesh(24, 12, 1.0f), smallMesh(16, 8, 1.0f);
+    TD_BoxMesh boxMesh;
+    static uint8_t shows[H][W], other[H][W], boxIn[H][W];
+    const float cd = 2.0f - 0.3f * 1.2f;
+    const float phi = 0.6f;
+    TD_Scene bigS, smallS;
+    TD_Object big(bigMesh), small(smallMesh);
+    bigS.add(big);
+    smallS.add(small);
+    setLegacyCamera(bigS.camera);
+    setLegacyCamera(smallS.camera);
+    big.setScale(2.0f);
+    small.setScale(1.2f);
+    small.setPosition(cd * sinf(phi), 0.0f, -cd * cosf(phi));
+    big.setInk(false);
+    {
+      // where the big one shows: both in one scene, solid and inkless, the
+      // small one dark
+      TD_Scene both;
+      TD_Object bigToo(bigMesh), smallToo(smallMesh);
+      both.add(bigToo);
+      both.add(smallToo);
+      setLegacyCamera(both.camera);
+      bigToo.setScale(2.0f);
+      smallToo.setScale(1.2f);
+      smallToo.setPosition(cd * sinf(phi), 0.0f, -cd * cosf(phi));
+      bigToo.setInk(false);
+      smallToo.setInk(false);
+      smallToo.setMaterial(TD_MATERIAL_BLACK);
+      renderToChecked(both, target, TD_SOLID);
+      std::memcpy(shows, fb, sizeof fb);
+    }
+    TD_Renderer r;
+    r.setOutlineDepthTest(true);
+    long rim[2] = {0, 0};
+    for (int grouped = 0; grouped < 2; ++grouped) {
+      big.setInkGroup(grouped ? 1 : 0);
+      small.setInkGroup(grouped ? 1 : 0);
+      composeTo(r, target, {&bigS, &smallS});
+      for (int y = 1; y < H - 1; ++y)
+        for (int x = 1; x < W - 1; ++x) rim[grouped] += fb[y][x] == 1 && allLit3(shows, x, y);
+    }
+    CHECK(rim[0] > 5 && rim[1] == 0,
+          "across passes, a grouped rim must not ink where the big ball shows (%ld px; %ld ungrouped)",
+          rim[1], rim[0]);
+
+    TD_Scene boxS, frontS;
+    TD_Object box(boxMesh), front(smallMesh);
+    boxS.add(box);
+    frontS.add(front);
+    setLegacyCamera(boxS.camera);
+    setLegacyCamera(frontS.camera);
+    box.setScale(1.4f);
+    box.setPosition(0.0f, 0.0f, -1.7f);
+    box.setInk(false);
+    front.setScale(0.4f);
+    front.setPosition(0.0f, 0.0f, -2.8f);
+    front.setInkGroup(1);
+    renderToChecked(boxS, target, TD_SOLID);  // the box's footprint
+    std::memcpy(boxIn, fb, sizeof fb);
+    small.setVisible(false);
+    big.setScale(1.6f);
+    for (int g = 1; g <= 2; ++g) {
+      big.setInkGroup((uint8_t)g);
+      composeTo(r, target, {&bigS, &boxS, &frontS});
+      if (g == 1) std::memcpy(other, fb, sizeof fb);
+    }
+    long inBox = 0, differ = 0;
+    for (int y = 0; y < H; ++y)
+      for (int x = 0; x < W; ++x)
+        if (allLit3(boxIn, x, y)) {
+          inBox += fb[y][x] == 1;
+          differ += fb[y][x] != other[y][x];
+        }
+    CHECK(inBox > 10 && differ == 0,
+          "a fill outside the group must stamp no group over a member's (%ld px differ; %ld inked)",
+          differ, inBox);
   }
 
   // ---- eyeball frames (no checks; visual sanity in the log) ----

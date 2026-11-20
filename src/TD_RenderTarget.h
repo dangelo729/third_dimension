@@ -10,8 +10,9 @@
 // project, cull, painter sort, Gouraud shade, scanline setup — and hands the
 // target shade values; the target decides pixels. crossed once per Gouraud
 // SPAN (the hot path), not per pixel; cel banding may split a geometric span
-// into several flat sub-spans, each still arriving through one plotShadeSpan
-// call. per-pixel plotShade serves line drawing and is the default path for
+// into several flat sub-spans, and the outline depth test into its runs of
+// visible pixels, each still arriving through one plotShadeSpan call.
+// per-pixel plotShade serves line drawing and is the default path for
 // minimal custom targets (3 required overrides: width, height, plotShade).
 //
 // the contract:
@@ -21,7 +22,9 @@
 //                   skip bounds checks in hot loops.
 //   G2 (coverage)   every pixel covered by a front face is plotted, including
 //                   fully dark ones (painter overwrite needs it); a fill-less
-//                   object (TD_Object::setFill(false)) covers nothing.
+//                   object (TD_Object::setFill(false)) covers nothing, and
+//                   under TD_OUTLINE's setOutlineDepthTest a pixel a nearer
+//                   fill already holds is not plotted.
 //   G3 (endpoints)  BLACK faces / SOLID outlines / CEL black ink arrive as
 //                   shade 0.0 exactly; WHITE faces / SOLID fills / WIREFRAME
 //                   lines / CEL white ink as 2.0; LIT Gouraud shades are

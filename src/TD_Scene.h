@@ -66,6 +66,11 @@ class TD_Scene {
   bool setOutlineEdges(const TD_Mesh &mesh, const TD_MeshEdges &edges) {
     return renderer_.setOutlineEdges(mesh, edges);
   }
+  // TD_OUTLINE per-pixel visibility: fills depth-tested in perspective-
+  // correct depth, kept across composed passes — see
+  // TD_Renderer::setOutlineDepthTest. default off.
+  void setOutlineDepthTest(bool on) { renderer_.setOutlineDepthTest(on); }
+  bool outlineDepthTest() const { return renderer_.outlineDepthTest(); }
 
   // render exactly one frame into the target (beginFrame..endFrame bracketed).
   // returns false on failure — reason in lastStatus() — with the target

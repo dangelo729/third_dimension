@@ -167,16 +167,20 @@ bool TD_Renderer::ensureDepth(uint32_t npix) {
   free(depth_);
   depth_ = p;
   capDepth_ = npix;
+  depthClearPending_ = true;  // a new buffer holds nothing the depth test can keep
   return true;
 }
 
 // the TD_OUTLINE line-group buffer beside it: one byte per target pixel,
-// grown the same way, allocated only for a frame with a line group.
+// grown the same way, allocated only for a frame with a line group. it
+// starts zeroed (no group), which is what every fill drawn before it in a
+// depth-tested frame would have stamped.
 bool TD_Renderer::ensureGroups(uint32_t npix) {
   if (npix <= capGroups_) return true;
   if (npix > 0x0FFFFFFFu) return false;
   uint8_t *p = (uint8_t *)malloc((size_t)npix);
   if (!p) return false;
+  memset(p, 0, (size_t)npix);
   free(groups_);
   groups_ = p;
   capGroups_ = npix;
@@ -191,6 +195,15 @@ void TD_Renderer::setOutlineCrease(float radians) {
   if (radians == outlineCrease_) return;
   outlineCrease_ = radians;
   invalidateOutline(nullptr);
+}
+
+void TD_Renderer::setOutlineDepthTest(bool on) {
+  // the two settings keep different contents in the depth buffer, so a
+  // switch clears it at the next pass; an equal set is a no-op, so setting
+  // it between the passes of a frame keeps that frame's depth.
+  if (on == outlineDepthTest_) return;
+  outlineDepthTest_ = on;
+  depthClearPending_ = true;
 }
 
 void TD_Renderer::invalidateOutline(const TD_Mesh *mesh) {
@@ -318,6 +331,7 @@ bool TD_Renderer::render(const TD_Scene &scene, TD_Camera &camera, TD_RenderTarg
     status_ = TD_ERR_NO_TARGET;
     return false;
   }
+  depthClearPending_ = true;  // a whole frame: under the depth test it starts empty
   drawFrame(scene, camera, target);
   // endFrame always closes an opened bracket: diffusion targets quantize
   // exactly once per frame.
@@ -587,7 +601,27 @@ void TD_Renderer::drawFrame(const TD_Scene &scene, const TD_Camera &camera,
   // ink pass after the fills tests every edge pixel against it.
   depthOn_ = false;
   groupsOn_ = false;
-  if (outlineMode) {
+  depthTestOn_ = outlineMode && outlineDepthTest_;
+  groupsStamp_ = false;
+  if (depthTestOn_) {
+    // under the depth test the buffer holds 1/z (0 empty) and persists
+    // across passes; a pending clear lands here. prepare sizes the buffers
+    // only for a non-empty scene, so an empty pass never touches them and
+    // leaves the clear pending. the group buffer, once it covers the target,
+    // is cleared with the depth and stamped by every passing fill.
+    if (nKept != 0) {
+      const uint32_t npix = (uint32_t)tw_ * (uint32_t)th_;
+      for (uint16_t oi = 0; oi < nKept; ++oi) groupsOn_ = groupsOn_ || objs_[oi].group != 0;
+      groupsStamp_ = groups_ != nullptr && capGroups_ >= npix;
+      if (depthClearPending_ || tw_ != depthW_ || th_ != depthH_) {
+        memset(depth_, 0, (size_t)npix * sizeof(float));  // all-zero bits are 0.0f
+        if (groupsStamp_) memset(groups_, 0, (size_t)npix);
+        depthClearPending_ = false;
+        depthW_ = tw_;
+        depthH_ = th_;
+      }
+    }
+  } else if (outlineMode) {
     const uint32_t npix = (uint32_t)tw_ * (uint32_t)th_;
     for (uint32_t i = 0; i < npix; ++i) depth_[i] = FLT_MAX;
     // beside each depth, the line group of the fill that wrote it (prepare
@@ -631,6 +665,17 @@ void TD_Renderer::drawFrame(const TD_Scene &scene, const TD_Camera &camera,
       depthOn_ = true;
       depthFlat_ = whiteFill ? 2.0f : 0.0f;
       depthGroup_ = of.group;
+      if (depthTestOn_) {
+        // under the depth test the interpolant is 1/z, which is exactly
+        // screen-linear across a planar triangle.
+        for (uint16_t t = triStart; t < triStart + triCount; ++t) {
+          uint16_t a = msh.tris[t][0], b = msh.tris[t][1], c = msh.tris[t][2];
+          fillTri(target, sx_[vb + a], sy_[vb + a], 1.0f / sz_[vb + a], sx_[vb + b], sy_[vb + b],
+                  1.0f / sz_[vb + b], sx_[vb + c], sy_[vb + c], 1.0f / sz_[vb + c]);
+        }
+        depthOn_ = false;
+        continue;
+      }
       for (uint16_t t = triStart; t < triStart + triCount; ++t) {
         // every fan triangle fills — the per-triangle re-cull is skipped so
         // a non-planar face leaves no coverage holes for hidden lines to
@@ -780,7 +825,8 @@ float td_celLevel(int band, float ambient, uint8_t bands) {
 
 // scanline fill sampling pixel centers, half-open on the right/bottom:
 // adjacent triangles sharing an edge neither crack nor double-draw. each
-// vertex carries its own shade (its view depth under the outline fill);
+// vertex carries its own shade (its view depth under the outline fill, 1/z
+// under the outline depth test);
 // edges and spans interpolate it (Gouraud, screen-linear). the row bounds
 // are clamped in float space before the int conversion so extreme
 // projections cannot overflow the cast; in-range values convert identically
@@ -836,7 +882,8 @@ void TD_Renderer::fillTri(TD_RenderTarget &t, float x0, float y0, float s0, floa
       float tmp = xa; xa = xb; xb = tmp;
       tmp = sa; sa = sb; sb = tmp;
     }
-    if (depthOn_) depthFillSpan(t, y, xa, xb, sa, sb);
+    if (depthOn_ && depthTestOn_) depthTestFillSpan(t, y, xa, xb, sa, sb);
+    else if (depthOn_) depthFillSpan(t, y, xa, xb, sa, sb);
     else if (celSpanOn_) celFillSpan(t, y, xa, xb, sa, sb);
     else fillSpan(t, y, xa, xb, sa, sb);
   }
@@ -898,6 +945,51 @@ void TD_Renderer::depthFillSpan(TD_RenderTarget &t, int y, float xl, float xr, f
     }
   }
   fillSpan(t, y, xl, xr, depthFlat_, depthFlat_);
+}
+
+// the outline fill's span under the depth test: fillSpan's exact pixel
+// selection, each pixel's interpolated 1/z tested against the stored one. a
+// pixel passes if it is nearer, or tied within TD_OUTLINE_DEPTH_TIE of the
+// stored depth (the later draw wins a tie); a passing pixel stores its
+// depth (and, while groupsStamp_, its group) and is painted, a failing one
+// is left untouched. each maximal run of passing pixels crosses the seam
+// once at the flat shade with slope 0, from the span's own left edge; a
+// span that passes whole makes exactly fillSpan's call.
+void TD_Renderer::depthTestFillSpan(TD_RenderTarget &t, int y, float xl, float xr, float wl,
+                                    float wr) {
+  if (!(xl <= xr)) return;
+  float fxs = ceilf(xl - 0.5f);
+  float fxe = ceilf(xr - 0.5f);
+  if (fxs < 0.0f) fxs = 0.0f;
+  if (fxs > (float)tw_) fxs = (float)tw_;
+  if (fxe < 0.0f) fxe = 0.0f;
+  if (fxe > (float)tw_) fxe = (float)tw_;
+  int xs = (int)fxs;
+  int xe = (int)fxe - 1;
+  if (xe < xs) return;
+  float w = xr - xl;
+  float slope = w > 1e-6f ? (wr - wl) / w : 0.0f;
+  const float tie = 1.0f + TD_OUTLINE_DEPTH_TIE;
+  float *row = depth_ + (uint32_t)y * (uint32_t)tw_;
+  uint8_t *grow = groupsStamp_ ? groups_ + (uint32_t)y * (uint32_t)tw_ : nullptr;
+  int run = -1;     // first pixel of the open run, -1 for none
+  bool cut = false;  // some pixel failed
+  for (int x = xs; x <= xe; ++x) {
+    float d = wl + ((float)x + 0.5f - xl) * slope;
+    if (d * tie >= row[x]) {
+      row[x] = d;
+      if (grow) grow[x] = depthGroup_;
+      if (run < 0) run = x;
+    } else {
+      cut = true;
+      if (run >= 0) {
+        t.plotShadeSpan((int16_t)y, (int16_t)run, (int16_t)(x - 1), xl, depthFlat_, 0.0f);
+        run = -1;
+      }
+    }
+  }
+  if (!cut) fillSpan(t, y, xl, xr, depthFlat_, depthFlat_);
+  else if (run >= 0) t.plotShadeSpan((int16_t)y, (int16_t)run, (int16_t)xe, xl, depthFlat_, 0.0f);
 }
 
 // split one gouraud span at cel band-threshold crossings into flat
@@ -1029,27 +1121,57 @@ static inline bool inkPass(const float *depth, const uint8_t *groups, uint32_t i
   if (group != 0 && groups[i] == group) return false;
   return z <= depth[i] + tol;
 }
+// the same test against the outline depth test's buffer, which holds 1/z:
+// the stored depth is taken back to view depth, and an empty pixel (0)
+// always passes.
+static inline bool inkPassW(const float *depth, const uint8_t *groups, uint32_t i, float z,
+                            float tol, uint8_t group) {
+  if (group != 0 && groups[i] == group) return false;
+  const float w = depth[i];
+  if (w == 0.0f) return true;
+  return z <= 1.0f / w + tol;
+}
+typedef bool (*TD_InkPassFn)(const float *, const uint8_t *, uint32_t, float, float, uint8_t);
+template <TD_InkPassFn Pass>
 static inline bool inkVisible(const float *depth, const uint8_t *groups, int tw, int th, int x,
                               int y, float z, float tol, uint8_t group) {
   const uint32_t i = (uint32_t)y * (uint32_t)tw + (uint32_t)x;
-  if (inkPass(depth, groups, i, z, tol, group)) return true;
-  if (x > 0 && inkPass(depth, groups, i - 1, z, tol, group)) return true;
-  if (x + 1 < tw && inkPass(depth, groups, i + 1, z, tol, group)) return true;
-  if (y > 0 && inkPass(depth, groups, i - (uint32_t)tw, z, tol, group)) return true;
-  if (y + 1 < th && inkPass(depth, groups, i + (uint32_t)tw, z, tol, group)) return true;
+  if (Pass(depth, groups, i, z, tol, group)) return true;
+  if (x > 0 && Pass(depth, groups, i - 1, z, tol, group)) return true;
+  if (x + 1 < tw && Pass(depth, groups, i + 1, z, tol, group)) return true;
+  if (y > 0 && Pass(depth, groups, i - (uint32_t)tw, z, tol, group)) return true;
+  if (y + 1 < th && Pass(depth, groups, i + (uint32_t)tw, z, tol, group)) return true;
   if (group == 0) return false;
   // a grouped line can't lean on its own fill, and a fill can reach a pixel
   // past its silhouette line (every fan triangle of a face fills), so where
   // the line steps, the way out to the background may be only diagonal.
-  if (x > 0 && y > 0 && inkPass(depth, groups, i - (uint32_t)tw - 1, z, tol, group)) return true;
-  if (x + 1 < tw && y > 0 && inkPass(depth, groups, i - (uint32_t)tw + 1, z, tol, group)) return true;
-  if (x > 0 && y + 1 < th && inkPass(depth, groups, i + (uint32_t)tw - 1, z, tol, group)) return true;
-  if (x + 1 < tw && y + 1 < th && inkPass(depth, groups, i + (uint32_t)tw + 1, z, tol, group)) return true;
+  if (x > 0 && y > 0 && Pass(depth, groups, i - (uint32_t)tw - 1, z, tol, group)) return true;
+  if (x + 1 < tw && y > 0 && Pass(depth, groups, i - (uint32_t)tw + 1, z, tol, group)) return true;
+  if (x > 0 && y + 1 < th && Pass(depth, groups, i + (uint32_t)tw - 1, z, tol, group)) return true;
+  if (x + 1 < tw && y + 1 < th && Pass(depth, groups, i + (uint32_t)tw + 1, z, tol, group)) return true;
   return false;
 }
 
+// one ink pixel under the outline depth test, w the line's 1/z there: the
+// pixel test runs in view depth against the stored 1/z, and a plotted pixel
+// records the line's depth, kept if nearer than what is stored, so a fill
+// drawn later behind the line leaves it be. the depth recorded is the far
+// end of the line's own tolerance: the walk's pixels sit up to about a
+// pixel off the true edge, so the line's depth there is that far off its
+// surface's, and a later layer coplanar with that surface must still tie.
+void TD_Renderer::inkDepthTested(TD_RenderTarget &t, int x, int y, float w, float tol,
+                                 uint8_t group) {
+  const float z = 1.0f / w;
+  if (!inkVisible<inkPassW>(depth_, groups_, tw_, th_, x, y, z, tol, group)) return;
+  t.plotShade((int16_t)x, (int16_t)y, 2.0f);
+  const float wr = 1.0f / (z + tol);
+  float &d = depth_[(uint32_t)y * (uint32_t)tw_ + (uint32_t)x];
+  if (wr > d) d = wr;
+}
+
 // the outline ink line: drawLineShade's clip and walk with view depth
-// interpolated along the segment, each pixel plotted at 2.0 only where
+// interpolated along the segment (1/z under the outline depth test, the
+// same clip and steps carrying it), each pixel plotted at 2.0 only where
 // inkVisible passes it.
 void TD_Renderer::drawLineDepth(TD_RenderTarget &t, float x0, float y0, float z0, float x1,
                                 float y1, float z1, float tol, uint8_t group) {
@@ -1081,9 +1203,14 @@ void TD_Renderer::drawLineDepth(TD_RenderTarget &t, float x0, float y0, float z0
   const float zstep = steps > 0 ? (z1 - z0) / (float)steps : 0.0f;
   float z = z0;
   for (;;) {
-    if ((unsigned)ix0 < (unsigned)tw_ && (unsigned)iy0 < (unsigned)th_ &&
-        inkVisible(depth_, groups_, tw_, th_, ix0, iy0, z, tol, groupsOn_ ? group : (uint8_t)0))
+    if (depthTestOn_) {
+      if ((unsigned)ix0 < (unsigned)tw_ && (unsigned)iy0 < (unsigned)th_)
+        inkDepthTested(t, ix0, iy0, z, tol, groupsOn_ ? group : (uint8_t)0);
+    } else if ((unsigned)ix0 < (unsigned)tw_ && (unsigned)iy0 < (unsigned)th_ &&
+               inkVisible<inkPass>(depth_, groups_, tw_, th_, ix0, iy0, z, tol,
+                                   groupsOn_ ? group : (uint8_t)0)) {
       t.plotShade((int16_t)ix0, (int16_t)iy0, 2.0f);
+    }
     if (ix0 == ix1 && iy0 == iy1) break;
     int e2 = 2 * err;
     if (e2 >= dy) {
@@ -1163,6 +1290,11 @@ void TD_Renderer::outlineClassifiedLoop(TD_RenderTarget &t, const ObjFrame &of, 
     if (!ink) continue;
     uint32_t i = vb + msh.faceVerts[slot];
     uint32_t j = vb + msh.faceVerts[loopStart + (uint16_t)((k + 1) % loopCount)];
+    if (depthTestOn_) {
+      drawLineDepth(t, sx_[i], sy_[i], 1.0f / sz_[i], sx_[j], sy_[j], 1.0f / sz_[j], tol,
+                    of.group);
+      continue;
+    }
     drawLineDepth(t, sx_[i], sy_[i], sz_[i], sx_[j], sy_[j], sz_[j], tol, of.group);
   }
 }
