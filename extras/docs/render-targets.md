@@ -81,6 +81,8 @@ Renderer guarantees to the target:
   including fully dark ones. Painter overwrite — a near face covering a
   far one — depends on dark pixels being delivered. A fill-less object
   (`TD_Object::setFill(false)`) covers nothing: only its lines arrive.
+  Under `TD_OUTLINE`'s depth test (`setOutlineDepthTest(true)`), a pixel a
+  nearer fill already holds is not plotted.
 - **G3 (endpoint shades).** BLACK-material faces, SOLID-mode outlines,
   TD_CEL black ink, and TD_OUTLINE hidden-line fills arrive as exactly
   `0.0`; WHITE faces, SOLID fills, WIREFRAME lines, TD_CEL white ink,

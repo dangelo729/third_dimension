@@ -41,6 +41,7 @@ void setup() {
   rim.setIntensity(0.35f);
   scene.addLight(rim);
   scene.camera.setOrbit(0.0f, 0.35f);     // look down onto the orbital plane (radians)
+  scene.camera.setTarget(0.0f, 0.0f, 0.0f);   // look at the sun, wherever the planets are
   scene.camera.fitRadius(MARS_ORBIT + 0.3f);  // frame the outer orbit, world units
 }
 

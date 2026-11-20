@@ -20,10 +20,12 @@ fine but one 70 000-vertex mesh is not — split it into multiple meshes.
 
 ## Painter's occlusion envelope
 
-Occlusion is the painter's algorithm on per-face mean view depth — no
-z-buffer. It is correct for non-interpenetrating objects with reasonable
-depth separation and reasonably tessellated faces (face size small relative
-to depth differences).
+Occlusion is the painter's algorithm on per-face mean view depth; fills
+are not depth-buffered, except under `TD_OUTLINE` with
+`setOutlineDepthTest(true)` (see below). It is correct for
+non-interpenetrating objects with reasonable depth separation and
+reasonably tessellated faces (face size small relative to depth
+differences).
 
 It cannot resolve interpenetrating geometry or occlusion cycles (no draw
 order exists), and large faces mis-sort against small nearby objects — the
@@ -62,7 +64,7 @@ faces are smaller than the pop.
 Corner shades interpolate linearly in screen space, not perspective-correct.
 Invisible at 128×64; on large, close-up triangles at 320×240 the gradient
 bends slightly across the face. Tessellating large faces hides it.
-Perspective-correct interpolation is not implemented.
+Perspective-correct shade interpolation is not implemented.
 
 ## Added lights
 
@@ -119,6 +121,11 @@ plus one list pointer per light:
 - **Facing bits:** 1 B/face inside the renderer's face block (the 17 B/face
   figure below) — one memset + one store per culled face per frame, only
   while the mode is `TD_OUTLINE`.
+- **Depth buffer:** 4 B per target pixel (32 KB at 128×64), the same with
+  the depth test on or off, sized from the target in the prepare stage
+  (a failed allocation aborts with `TD_ERR_ALLOC`, the target untouched)
+  and freed by `releaseBuffers()`. A frame with a line group
+  (`setInkGroup`) adds a group buffer of 1 B per pixel (8 KB at 128×64).
 - **Crease flags are baked at build** against `setOutlineCrease`'s angle
   (default 60°, the converter's smoothing default); changing the angle
   invalidates every cached table. A mesh that deforms per frame with fixed
@@ -147,6 +154,14 @@ plus one list pointer per light:
   contour). Its lines depth-test against the frame's fills like any line
   and share the envelope above: one can poke one pixel past an occluder's
   contour where it meets it from behind.
+- **The depth test (`setOutlineDepthTest(true)`)** depth-tests every fill
+  pixel in 1/z, which is exact across a planar face, so a big ground face
+  does not mis-sort against a small object standing on it, and passes
+  composed into one frame occlude each other. Its depth persists across
+  `renderPass()` calls: a frame composed of passes calls
+  `clearOutlineDepth()` once before the first (`render()` clears it
+  itself). On the host the fill span loop runs about a third slower with
+  it on.
 - **Under `TD_OUTLINE` the dither method cannot affect the frame** — only
   the endpoint shades 0.0/2.0 cross the seam, and every method realizes
   them identically. A sketch that only ever renders outline mode can drop
@@ -204,8 +219,8 @@ in that mode). Worked examples: a one-object sphere (`TD_SphereMesh(32,
 24)` — 738 vertices, 768 faces) ≈ 22 KB; a 4-object, 2 000-vertex,
 1 200-face scene ≈ 45 KB. Growth is exact-fit high-water — buffers grow to
 the largest scene seen and stay, with no doubling slack and no per-frame
-realloc chatter. (`TD_OUTLINE`'s cached edge tables are budgeted separately
-above.)
+realloc chatter. (`TD_OUTLINE`'s cached edge tables and depth buffer are
+budgeted separately above.)
 
 ### reserve() / releaseBuffers()
 
@@ -242,8 +257,8 @@ Two scopes, don't conflate them:
   ≥ 1 always), monotonicity, silhouette coverage, in-bounds plotting,
   deterministic painter order (the sort has full tie-breaks, so frame
   content is a pure function of scene state on every platform and libc).
-- **Bit-exact frames are scoped to the pinned CI toolchain:** the
-  golden-hash tests compile with a pinned compiler and `-ffp-contract=off`.
+- **Bit-exact frames are scoped to the CI toolchain:** the golden-hash
+  tests compile with clang and `-ffp-contract=off`.
   Across arbitrary compilers/MCUs, fused-multiply-add contraction and
   last-ulp libm differences can flip individual dithered pixels. Identical
   binaries produce identical frames; different toolchains produce equivalent
@@ -256,5 +271,6 @@ Two scopes, don't conflate them:
 - **Uniform scale only** (`TD_Object::setScale(float)`): non-uniform scale
   would break the normals-transform-by-rotation-only invariant, so the API
   cannot express it.
-- **One y-flip, radians, CCW winding** and the other four convention
-  commitments: see `conventions.md`.
+- **One y-flip, radians (the field of view aside, in degrees), CCW
+  winding** and the other four convention commitments: see
+  `conventions.md`.

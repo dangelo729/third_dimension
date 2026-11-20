@@ -22,7 +22,7 @@
 
 Adafruit_SSD1331 oled(&SPI, OLED_CS, OLED_DC, OLED_RST);
 
-// engine-owned RGB565 framebuffer (96*64*2 = 12 KB).
+// the sketch's RGB565 framebuffer (96*64*2 = 12 KB), which the target draws into.
 static uint16_t framebuffer[FB_W * FB_H];
 TD_Color565Target target(framebuffer, FB_W, FB_H);
 

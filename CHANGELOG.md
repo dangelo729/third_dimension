@@ -13,6 +13,10 @@ releases may break API; breaks are called out under a "Breaking" heading.
 
 ### Added
 
+- **Quick-start suite (`test/host/test_quickstart.cpp`).** The front door as a sketch
+  drives it, on a 128x64 target: the README's sketch in every render mode, the default
+  light, the auto-fit and `refit()`, `setOrbit`, `fitRadius` with `setTarget`, `setFov`
+  (in degrees), and two scenes composed with `renderPass()`.
 - **Outline depth test: `TD_Renderer::setOutlineDepthTest(true)` and
   `clearOutlineDepth()`.** Under `TD_OUTLINE`, per-pixel visibility across a whole
   composed frame. The depth buffer holds perspective-correct depth, 1/z, which is exactly
@@ -73,9 +77,10 @@ releases may break API; breaks are called out under a "Breaking" heading.
   export — its DOM-free `td-core` script, lifted out of the page: `parseProjectText` →
   `bake` → `emitHeader` — under the `jsc` shell every Mac ships, or under node. The
   input is a saved project `.json` or an exported `.h`; `--decimate T1,T2,...` sets each
-  part's decimate target and `--name` the symbol prefix before the bake. Re-baking an
-  exported header with no options reproduces it byte for byte. The header is written
-  only after a clean bake.
+  part's decimate target and `--name` the symbol prefix before the bake. Under `jsc`,
+  re-baking an exported header with no options reproduces it byte for byte; under node
+  a header with a decimated part can come out different. The header is written only
+  after a clean bake.
 - **Baked outline edge tables: `TD_MeshEdges` + `setOutlineEdges`.** A static mesh's
   `TD_OUTLINE` edge table can be baked offline by `tools/bake_edges.cpp` into a header
   beside the mesh (TD edges format 1, its own `TD_EDGES_FORMAT` handshake), so it lives
@@ -200,9 +205,9 @@ releases may break API; breaks are called out under a "Breaking" heading.
   diffusion post-pass); `TD_Color565Target` with per-object color and exact BLACK/WHITE
   palette materials; all 7 procedural primitives through the single-allocation mesh
   builder; and `td_validateMesh`.
-- Golden verification: the pre-existing bit-exact golden pins (per-method dither tile
-  signatures and full-frame render hashes carried over from the proven source engine)
-  pass unchanged through the new library under the legacy mapping — the port is
+- Golden verification: the bit-exact golden pins (per-method dither tile signatures and
+  full-frame render hashes, taken from the engine the library was ported from) pass
+  unchanged through the library under the tests' fixed camera — the port is
   pixel-identical. The committed host suite (the acceptance gate) builds at `-O1` with
   `-ffp-contract=off`; that flag is load-bearing, since FMA contraction shifts last-ulp
   results and would move the pins.
@@ -211,6 +216,14 @@ releases may break API; breaks are called out under a "Breaking" heading.
 
 ### Fixed
 
+- A `TD_OUTLINE` frame with nothing to draw (every object hidden, or none) wrote the
+  outline depth buffer before any was sized: through a null pointer on a renderer's
+  first outline frame, past the end of a buffer sized for a smaller target after that.
+  A pass with no visible object now returns before touching any buffer. **No golden
+  pins moved.** Tested in the outline suite (O11), with and without the depth test.
+- The host tests build with `-Werror` again (a `long` printed with `%d` stopped the CI
+  build), and `make -C test/host run` builds as CI does: with clang++ (make's default
+  compiler had stood in for it) and `-Werror`.
 - Guard-band line endpoints are now clipped **parametrically** (Liang–Barsky against the
   band rectangle) instead of per-axis clamped — per-axis clamping bent the visible
   portion of WIREFRAME/SOLID edges whose projections left the band. In-band endpoints are

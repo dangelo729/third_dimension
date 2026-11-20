@@ -29,8 +29,9 @@ The renderer runs the whole geometry pipeline and hands the target *shade
 values*; the target decides pixels. The seam is crossed once per Gouraud
 **span**, not per pixel — per-pixel `plotShade` remains only for line drawing
 and minimal custom targets. (`TD_CEL` may split one geometric span into
-several flat sub-spans at band-threshold crossings; each sub-span still
-arrives through one `plotShadeSpan` call.)
+several flat sub-spans at band-threshold crossings, and `TD_OUTLINE`'s depth
+test into its runs of visible pixels; each piece still arrives through one
+`plotShadeSpan` call.)
 
 ## The pipeline, stage by stage
 
@@ -43,11 +44,14 @@ One `scene.render(target)` call performs, in order:
    exceed u16 totals. Grow the working buffers to fit, or fail with
    `TD_ERR_ALLOC` *before any pixel is touched*, leaving the target untouched.
    Under `TD_OUTLINE`, also build any missing edge-adjacency tables here (one
-   per distinct mesh, cached — see stage 7's ink pass), under the same
-   allocate-before-any-pixel contract; `scene.prebuildOutline()` moves that
-   into `setup()`. Then resolve the camera's framing intent (auto-fit latch,
-   orbit pose) against the target dimensions and scene bounds into an eye
-   point, orthonormal basis, focal length, and principal point.
+   per distinct mesh, cached — see stage 7's ink pass) and size the depth
+   buffer for the target, under the same allocate-before-any-pixel contract;
+   `scene.prebuildOutline()` moves the tables into `setup()`. Then resolve
+   the camera's framing intent (auto-fit latch, orbit pose) against the
+   target dimensions and scene bounds into an eye point, orthonormal basis,
+   focal length, and principal point. A scene with no visible object skips
+   all of this: it sizes nothing and resolves no camera, and its frame
+   opens and closes with nothing drawn.
 2. **Frame bracket.** `target.beginFrame()` — false aborts the render. Built-in
    targets auto-clear here (diffusion mono targets fill their shade field with
    the "untouched" sentinel). The renderer never clears: it writes only pixels
@@ -84,14 +88,23 @@ One `scene.render(target)` call performs, in order:
    with the normal rotated to world space. Cel keeps corner shades
    continuous — quantization happens per span, after interpolation (stage 8). The scanline fill samples
    pixel centers and is half-open right/bottom, so adjacent triangles neither
-   crack nor double-draw. `TD_OUTLINE` takes its own two-pass branch here:
-   *fill* every fan triangle of the face (the per-triangle re-cull is skipped,
-   so non-planar faces leave no coverage holes) flat at 0.0 — 2.0 for a WHITE
-   face — so the painter erases hidden lines; then *ink* the face's classified
-   loop edges at 2.0 through the cached edge table: an edge draws iff its
-   boundary flag is set, its crease flag is set, or the face across it is not
-   known front-facing this frame (silhouette; UNKNOWN neighbors ink — they are
-   not drawn, so the edge bounds drawn geometry).
+   crack nor double-draw. `TD_OUTLINE` takes its own branch here, in two
+   passes. The painter loop only *fills*: every fan triangle of the face
+   (the per-triangle re-cull is skipped, so non-planar faces leave no
+   coverage holes) flat at 0.0 — 2.0 for a WHITE face — while each pixel's
+   nearest view depth goes into the outline depth buffer. After every
+   record has filled, the *ink* pass walks the sorted records again and
+   draws each face's classified loop edges at 2.0 through the cached edge
+   table: an edge draws iff its boundary flag is set, its crease flag is
+   set, or the face across it is not known front-facing this frame
+   (silhouette; UNKNOWN neighbors ink — they are not drawn, so the edge
+   bounds drawn geometry). Each ink pixel is depth-tested against the
+   buffer, within a tolerance scaled by the face's depth slope, so hidden
+   lines stay hidden, and since no fill lands after a line, a contour stays
+   closed. Under `setOutlineDepthTest(true)` the buffer holds 1/z instead,
+   every fill pixel is depth-tested too, ink records its depth, and the
+   buffer persists across `renderPass()` calls until `render()` or
+   `clearOutlineDepth()` clears it.
 8. **Spans.** Each scanline segment clamps to the viewport and crosses the seam
    once: `target.plotShadeSpan(y, xs, xe, leftEdgeX, leftShade, shadeSlope)`.
    Under `TD_CEL`, a LIT span is first split at band-threshold crossings into
@@ -107,7 +120,7 @@ One `scene.render(target)` call performs, in order:
    2.0, as does TD_CEL's white ink. Lines are Bresenham, endpoints clipped
    (Liang–Barsky) to a guard band (±4× the target dimensions, in float space)
    before integer conversion, then funneled through a per-pixel bounds check —
-   the one place per-pixel checking still exists.
+   the one place per-pixel checking exists.
 9. **Finish.** `target.endFrame()` — error-diffusion dithers quantize their
    recorded shade field here. `lastDrawCount()` / `lastNearSkipCount()` are
    tallied during culling and drawing above and are final the moment `render()`
@@ -129,9 +142,9 @@ fillSpan ──→ plotShadeSpan ──→ target pixels        (endFrame: diffu
 
 ## The working-buffer model
 
-The renderer owns the first three buffers below as instance state (no globals).
-The fourth — the diffusion field — belongs to `TD_MonoTarget`, not the renderer,
-and is listed only to complete the per-frame memory picture.
+The renderer owns every buffer below but the last as instance state (no
+globals). The last — the diffusion field — belongs to `TD_MonoTarget`, not the
+renderer, and is listed only to complete the per-frame memory picture.
 
 | buffer | size | contents | owner |
 |---|---|---|---|
@@ -139,6 +152,7 @@ and is listed only to complete the per-frame memory picture.
 | face block | 17 B/face | per-face mean depth + one draw record + one facing byte (written only under `TD_OUTLINE`) | renderer |
 | object cache | ~108 B/object | per-frame transform state (M, N, T, scale, offsets, color, material) | renderer |
 | outline edge tables | 3 B/loop entry per distinct mesh | per-edge neighbor + crease/boundary flags, built once per mesh and cached (`TD_OUTLINE` only) | renderer |
+| outline depth buffer | 4 B/pixel, +1 B/pixel in a frame with a line group | nearest fill depth per pixel (1/z under the depth test), and beside it each pixel's line group (`TD_OUTLINE` only) | renderer |
 | diffusion field | 8 B/pixel | shade field + error accumulator, only when a diffusion dither is selected | `TD_MonoTarget` |
 
 Growth is **exact-fit, high-water**: buffers grow to the largest scene seen and
@@ -151,7 +165,7 @@ examples are in `limits.md`.
 
 ## The invariants
 
-These hold on every platform, enforced by the test suite. The renderer/target
+These hold on every platform, and the host test suite checks them. The renderer/target
 contract (G1–G3 / T1–T3) is specified in `render-targets.md`. Two invariants
 belong to the pipeline itself:
 

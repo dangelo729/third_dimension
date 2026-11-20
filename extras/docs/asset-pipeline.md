@@ -134,12 +134,16 @@ header's project block like any edit:
 JSC=/System/Library/Frameworks/JavaScriptCore.framework/Versions/A/Helpers/jsc
 $JSC tools/editor_bake.js -- tools/editor.html Model.h -o ModelSmall.h \
     --decimate 320,40,40 --name model_small    # per-part face targets, in part order
-node tools/editor_bake.js tools/editor.html Model.h -o ModelSmall.h   # same, under node
+node tools/editor_bake.js tools/editor.html Model.h -o ModelSmall.h   # under node
 ```
 
 `--decimate` takes one target per part (`-` keeps a part's own); `--name`
-sets the symbol prefix. Re-baking an exported header with no options
-reproduces it byte for byte.
+sets the symbol prefix. Under `jsc`, re-baking an exported header with no
+options reproduces it byte for byte: both headers in `test/host` do. Under
+node the output can differ where a part is decimated:
+`TD_Model_ExportFixture.h` (no decimated part) re-bakes byte for byte, but
+`TD_Model_DecimatedFixture.h` re-bakes to other vertices under node 26. Use
+`jsc` to reproduce a header exactly.
 
 ## Baking a mesh's outline edge table
 

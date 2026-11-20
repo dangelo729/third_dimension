@@ -90,7 +90,8 @@ void setup() {
 
   for (uint8_t i = 0; i < 5; ++i) scene.add(*TOUR[i]);
   scene.setRenderMode(TD_OUTLINE);
-  scene.camera.fitRadius(1.0f);        // fixed framing across all three demos
+  scene.camera.setTarget(0.0f, 0.0f, 0.0f);  // fixed framing across all three demos,
+  scene.camera.fitRadius(1.0f);              // wherever the cone swings
   scene.camera.setOrbit(0.0f, 0.35f);  // slight look-down
 
   // build the edge tables now, where an allocation failure is visible —

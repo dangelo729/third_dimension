@@ -238,8 +238,8 @@ button.armed { background: var(--secondary); font-weight: bold; }
 <script id="td-core">
 "use strict";
 // ===========================================================================
-// core — pure logic, no DOM. Runs in the browser and, for the parity and
-// export test drivers, under node (the drivers extract this script block).
+// core — pure logic, no DOM. Runs in the browser and, lifted out of the
+// page by tools/editor_bake.js, under jsc or node.
 // Everything here is a port of third_dimension source, and parity is the
 // contract:
 //   - math: TD_Math.h (tdEulerXYZ composition order R5, exact matrix shapes)
@@ -314,7 +314,7 @@ function eulerFromMat(m) {
   return [Math.atan2(sy * m[3], m[4]), ry, 0];
 }
 
-// D16: a drag rotation is a true rotation about a world axis composed onto
+// a drag rotation is a true rotation about a world axis composed onto
 // the part's current rotation — R' = Raxis(theta)·R — then decomposed back
 // to euler XYZ for storage. axis is 'x' | 'y' | 'z'.
 function rotateEulerAboutAxis(rot, axis, theta) {
@@ -733,7 +733,7 @@ function mintPart(project, type) {
   return part;
 }
 
-const MIN_SCALE = 1e-3;  // D7: negative and zero scale are rejected everywhere
+const MIN_SCALE = 1e-3;  // negative and zero scale are rejected everywhere
 
 function isVec3(v) {
   return Array.isArray(v) && v.length === 3 && v.every((x) => typeof x === "number" && isFinite(x));
@@ -869,7 +869,7 @@ function parseProjectText(text) {
   return p;
 }
 
-// ---- part transform (shared by preview and baker — D9's parity point) -----
+// ---- part transform (shared by preview and baker, so the two agree) -----
 
 // world geometry of one part: v' = R·diag(s)·v + pos (R from the committed
 // euler order), normals n' = normalize(R·diag(1/s)·n) — the inverse-
@@ -1865,8 +1865,8 @@ function bake(project) {
     v[2] = (v[2] - center[2]) * inv;
   }
 
-  // winding invariant per closed part (D7 forbids the mirror path that could
-  // break it; this check makes the refusal readable if it ever regresses).
+  // winding invariant per closed part (scale is never negative, so no part
+  // is mirrored; this check makes a broken winding a readable refusal).
   for (const r of partRanges) {
     if (!PRIMS[r.part.type].closed) continue;
     const vol = signedVolume(verts, tris.slice(r.triBase, r.triBase + r.triCount));
@@ -2132,10 +2132,10 @@ if (typeof module !== "undefined" && module.exports) module.exports = TDCore;
 <script>
 "use strict";
 // ===========================================================================
-// UI — browser only (the jsc/node test drivers stop at TDCore). Four-panel
-// authoring per the plan: ortho panels place with the missing axis at 0,
+// UI — browser only (tools/editor_bake.js stops at TDCore). Four-panel
+// authoring: ortho panels place with the missing axis at 0,
 // perspective places on the ground plane; drag moves, R+drag rotates about
-// the panel's perpendicular axis (D16), S+drag scales exponentially; X/Y/Z
+// the panel's perpendicular axis, S+drag scales exponentially; X/Y/Z
 // tap-lock a drag to a model axis; snap 0.25 / 15° with Alt bypass; space
 // fullscreens the hovered panel; the preview painter mirrors the device
 // pipeline's structure (per-face far-first sort with (part, face)
@@ -2258,7 +2258,7 @@ function doRedo() {
 }
 
 // ---- panels ---------------------------------------------------------------
-// ortho bases from the plan's table (right-handed, det +1, forward INTO the
+// ortho bases (right-handed, det +1, forward INTO the
 // scene): front sees the model's front (R1); top reads the front edge (-Z)
 // at the bottom of the screen.
 
@@ -2331,7 +2331,7 @@ function orthoToScreen(p, v) {
 function orthoFromScreen(p, mx, my) {
   const wx = (mx - p.w / 2) / p.zoom + p.panX;
   const wy = -(my - p.h / 2) / p.zoom + p.panY;
-  return add3(mul3(p.right, wx), mul3(p.up, wy));  // missing axis = 0 (D5)
+  return add3(mul3(p.right, wx), mul3(p.up, wy));  // missing axis = 0
 }
 function perspCamera(p) {
   const ce = Math.cos(p.orbitEl);
@@ -2356,7 +2356,7 @@ function perspRay(p, cam, mx, my) {
 }
 // ray ∩ horizontal plane y = planeY; null when parallel, behind the camera,
 // or outside a sane radius of the orbit target (keeps horizon-grazing rays
-// from flinging parts to infinity — D5).
+// from flinging parts to infinity).
 function groundHit(p, ray, planeY, unbounded) {
   if (Math.abs(ray.dir[1]) < 1e-9) return null;
   const t = (planeY - ray.origin[1]) / ray.dir[1];
@@ -3427,7 +3427,7 @@ function refreshNumeric() {
     np.appendChild(d);
   };
 
-  // native constructor params (tessellation control lives here — D12)
+  // native constructor params (tessellation control lives here)
   for (const spec of C.PRIMS[part.type].params) {
     const inp = numInput(entries, () => fmtNum(part.params[spec.k]), (v) => {
       const nv = spec.int ? Math.max(1, Math.floor(v)) : v;
@@ -3556,7 +3556,7 @@ function refreshNumeric() {
     touch(part);
     return true;
   });
-  // stored radians, displayed degrees (D6)
+  // stored radians, displayed degrees
   triple("rotation °", (a) => fmtNum(part.rotation[a] * 180 / Math.PI, 2), (a, v) => {
     part.rotation[a] = v * Math.PI / 180;
     touch(part);
@@ -3800,7 +3800,7 @@ function updateDrag(e) {
     if (snapOn) theta = snapTo(theta, SNAP_ROT);
     part.rotation = C.rotateEulerAboutAxis(d.origRot, axis, theta);
   } else if (d.kind === "scale") {
-    // exponential, never center-relative; clamped to epsilon (D7)
+    // exponential, never center-relative; clamped to epsilon
     const f = Math.pow(2, (mx - d.startMx) / 100);
     const s = d.origScale.slice();
     if (d.axis) {
@@ -3862,7 +3862,7 @@ for (const p of Object.values(panels)) {
     const wantDup = e.ctrlKey || e.metaKey;
 
     if (armedType) {
-      // one click places one part and returns to select mode (D5)
+      // one click places one part and returns to select mode
       const pos = placementPoint(p, cam, mx, my, e.altKey);
       if (!pos) return;
       pushUndo();
@@ -4099,7 +4099,7 @@ document.addEventListener("keydown", (e) => {
   if (mod && key === "d") {
     e.preventDefault();
     const part = selectedPart();
-    if (!part || drag) return;  // no mid-gesture snapshots (D11)
+    if (!part || drag) return;  // no mid-gesture snapshots
     pushUndo();
     const dup = cloneInPlace(part);
     dup.position[0] += SNAP_POS;  // offset one snap step
@@ -4230,8 +4230,8 @@ if (location.hash === "#dev") {
   invalidate();
 }
 
-// headless smoke-test handle: the dev harness boots this file against a DOM
-// stub and asserts every panel draws finite coordinates (the class of bug a
+// headless smoke-test handle: a script can boot this file against a DOM
+// stub and assert every panel draws finite coordinates (the class of bug a
 // code review can't see: silent NaNs draw nothing and throw nothing).
 window.__td = {
   panels, renderAll,

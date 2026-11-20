@@ -33,7 +33,7 @@ TD_Scene scene;
 void setup() {
   Serial.begin(115200);
   scene.add(donut);
-  target.setAutoClear(true);  // beginFrame plots the dark state everywhere
+  target.setAutoClear(true);  // the default: beginFrame plots the dark state everywhere
 }
 
 void loop() {

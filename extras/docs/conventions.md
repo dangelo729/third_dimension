@@ -58,7 +58,9 @@ Positive angles rotate counter-clockwise looking down the axis from its
 positive end. `TD_Object::setRotation(rx, ry, rz)` applies **Z (roll)
 first, then Y (yaw — the turntable spin), then X (pitch)**. This order is
 an API commitment: it will not change, and animation code may rely on it.
-All angles are radians (use Arduino's `radians()` for degrees).
+Angles are radians everywhere — rotations, orbit, light direction, the
+outline crease — except the camera's field of view: `TD_Camera::setFov`
+(and `focalForFovY`) take degrees. Arduino's `radians()` converts.
 
 *If you assume otherwise:* single-axis rotations look identical under any
 order, so the bug hides until you combine axes — then compound poses land

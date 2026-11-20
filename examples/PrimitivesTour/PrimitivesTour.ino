@@ -3,7 +3,7 @@
 // PrimitivesTour — all eight procedural primitives arranged in a ring,
 // rotating in place on a slowly orbiting stage. demonstrates mesh
 // generation, per-object position/rotation/scale, and framing an animated
-// multi-object scene with one fitRadius call.
+// multi-object scene with setTarget and fitRadius.
 //
 // requires: Adafruit GFX Library, Adafruit SSD1306. wiring: standard I2C,
 // display at address 0x3C.
@@ -43,6 +43,7 @@ void setup() {
   }
 
   scene.camera.setOrbit(0.0f, 0.5f);          // look down onto the ring (radians)
+  scene.camera.setTarget(0.0f, 0.0f, 0.0f);   // the ring's center, as the shapes move
   scene.camera.fitRadius(RING_RADIUS + 0.7f); // ring + shape radius, world units
 }
 
