@@ -10,8 +10,12 @@
 #
 # the suite is the library's acceptance gate.
 
-CXX ?= clang++
-CXXFLAGS := -std=c++17 -O1 -g -Wall -Wextra -ffp-contract=off
+# clang++, as ci builds with, unless CXX is given (make's own default, c++,
+# does not count).
+ifeq ($(origin CXX),default)
+CXX := clang++
+endif
+CXXFLAGS := -std=c++17 -O1 -g -Wall -Wextra -Werror -ffp-contract=off
 CPPFLAGS := -I../../src
 
 CORE_SRC := $(wildcard ../../src/*.cpp) $(wildcard ../../src/internal/*.cpp)

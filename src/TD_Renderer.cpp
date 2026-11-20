@@ -260,8 +260,8 @@ const TD_MeshEdges *TD_Renderer::bakedEdges(const TD_Mesh &mesh) const {
 }
 
 const TD_EdgeTable *TD_Renderer::findEdgeTable(const TD_Mesh &mesh) const {
-  // linear scan: scenes hold a handful of distinct meshes, and the draw loop
-  // memoizes per record run.
+  // linear scan, once per inked face: scenes hold a handful of distinct
+  // meshes.
   for (uint16_t i = 0; i < outlineCount_; ++i) {
     const TD_OutlineCacheEntry &e = outlineCache_[i];
     if (e.mesh == &mesh && e.nv == mesh.nverts && e.nf == mesh.nfaces &&
@@ -525,6 +525,10 @@ void TD_Renderer::drawFrame(const TD_Scene &scene, const TD_Camera &camera,
     faceBase += msh.nfaces;
     ++nKept;
   }
+  // nothing to draw: prepare sized no buffer for this pass, so it touches
+  // none (the outline depth buffer may be unallocated or smaller than the
+  // target).
+  if (nKept == 0) return;
 
   // frontness is tested per triangle: a non-planar quad's fan triangles may
   // disagree, and the face draws if any of them fronts. decal faces join the

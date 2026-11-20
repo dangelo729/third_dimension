@@ -37,7 +37,7 @@ struct TD_BakedEdgesEntry;    // TD_Renderer.cpp: baked tables handed in per mes
 // so output is a pure function of the input on every platform. under
 // TD_OUTLINE, setOutlineDepthTest(true) depth-tests the fills per pixel too,
 // in perspective-correct depth kept across the renderPass calls of a
-// composed frame, so visibility no longer rests on the sort.
+// composed frame, so visibility does not rest on the sort.
 class TD_Renderer {
  public:
   TD_Renderer();

@@ -70,8 +70,8 @@ float frand(float lo, float hi);
 
 // suite entry points, run in this order by test_main.cpp. the outline suite
 // runs after every fuzzing suite so its draws leave the shared LCG fuzz
-// stream of the earlier suites untouched; the fixture suites draw no fuzz
-// at all, so they run last.
+// stream of the earlier suites untouched; the fixture and quick-start
+// suites draw no fuzz at all, so they run last.
 void runDitherTests();
 void runRenderTests();
 void runCelTests();
@@ -80,5 +80,6 @@ void runLightTests();
 void runOutlineTests();
 void runExportFixtureTests();
 void runDecimatedFixtureTests();
+void runQuickstartTests();
 
 #endif  // TD_TEST_COMMON_H

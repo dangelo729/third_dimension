@@ -26,7 +26,7 @@ class TD_Camera {
   // around the target point, not the latched first-frame bounds.
   void fitRadius(float worldRadius, float margin = 0.90f);
   void refit();                          // re-latch auto-fit bounds next frame
-  void setFov(float degrees);            // vertical field of view intent
+  void setFov(float degrees);            // vertical field of view intent, in degrees
   void setFocalPixels(float px);         // expert: raw projection scale
 
   // ---- pose ----
@@ -62,13 +62,14 @@ class TD_Camera {
   float centerY() const { return cy_; }
   TD_Vec3 worldToView(TD_Vec3 p) const;  // rot * (p - eye)
 
-  // standard pinhole relation: half the viewport height subtends half the FOV.
+  // standard pinhole relation: half the viewport height subtends half the
+  // FOV, given in degrees.
   static float focalForFovY(float fovYDeg, int16_t viewportH);
   // worst-case fit: a sphere of radius R at eye-distance D is bounded by its
   // silhouette cone (tan(theta) = R / sqrt(D*D - R*R)); this focal makes it
   // project to exactly pixelRadius px for any rotation. requires D > R > 0;
-  // returns 0 on violation. R = 1 reproduces the classic
-  // FIT_PX * sqrt(D*D - 1) expression bit-for-bit.
+  // returns 0 on violation. at R = 1 it is pixelRadius * sqrt(D*D - 1) bit
+  // for bit.
   static float focalForFit(float worldRadius, float distance, float pixelRadius);
 
  private:

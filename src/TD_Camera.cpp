@@ -171,8 +171,8 @@ float TD_Camera::focalForFovY(float fovYDeg, int16_t viewportH) {
 // eye-distance D subtends a silhouette cone with
 // tan(theta) = R / sqrt(D*D - R*R), so this focal projects it to exactly
 // pixelRadius px of screen radius for any rotation — worst-case fit, the
-// rim never clips. R = 1 reproduces the classic FIT_PX * sqrt(D*D - 1)
-// expression bit-for-bit. requires D > R > 0; anything else (including
+// rim never clips. at R = 1 it is pixelRadius * sqrt(D*D - 1) bit for bit
+// (the divide by 1 is exact). requires D > R > 0; anything else (including
 // NaN) returns 0.
 float TD_Camera::focalForFit(float worldRadius, float distance, float pixelRadius) {
   if (!(distance > worldRadius && worldRadius > 0.0f)) return 0.0f;

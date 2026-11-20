@@ -21,10 +21,10 @@ void runDitherTests() {
     CHECK(t.dither() == TD_DITHER_BAYER8, "TD_MonoTarget default dither must be Bayer 8x8");
   }
 
-  // ---- J1. Bayer-8 must be bit-identical to the legacy formula ----
+  // ---- J1. Bayer-8 must be bit-identical to the direct formula ----
   // (shade * 64 > BAYER8[y&7][x&7] + 0.5), including at the thresholds
   {
-    static const uint8_t LEGACY8[8][8] = {
+    static const uint8_t M8[8][8] = {
         {0, 32, 8, 40, 2, 34, 10, 42},  {48, 16, 56, 24, 50, 18, 58, 26},
         {12, 44, 4, 36, 14, 46, 6, 38}, {60, 28, 52, 20, 62, 30, 54, 22},
         {3, 35, 11, 43, 1, 33, 9, 41},  {51, 19, 59, 27, 49, 17, 57, 25},
@@ -35,19 +35,20 @@ void runDitherTests() {
       for (int x = 0; x < 16; ++x) {  // periodicity (mask bugs), not just one tile
         for (int k = -8; k <= 1032; ++k) {  // dense sweep, past both endpoints
           float s = k / 1024.0f;
-          uint8_t legacy = s * 64.0f > (float)LEGACY8[y & 7][x & 7] + 0.5f;
-          if (td_ditherOn(x, y, s, TD_DITHER_BAYER8) != legacy) ++mismatches;
+          uint8_t want = s * 64.0f > (float)M8[y & 7][x & 7] + 0.5f;
+          if (td_ditherOn(x, y, s, TD_DITHER_BAYER8) != want) ++mismatches;
         }
         for (int b = 0; b < 64; ++b) {  // and exactly at/around every threshold
           float th = (b + 0.5f) / 64.0f;
           float probes[3] = {std::nextafter(th, 0.0f), th, std::nextafter(th, 1.0f)};
           for (float s : probes) {
-            uint8_t legacy = s * 64.0f > (float)LEGACY8[y & 7][x & 7] + 0.5f;
-            if (td_ditherOn(x, y, s, TD_DITHER_BAYER8) != legacy) ++mismatches;
+            uint8_t want = s * 64.0f > (float)M8[y & 7][x & 7] + 0.5f;
+            if (td_ditherOn(x, y, s, TD_DITHER_BAYER8) != want) ++mismatches;
           }
         }
       }
-    CHECK(mismatches == 0, "Bayer-8 not bit-identical to legacy (%ld mismatches)", mismatches);
+    CHECK(mismatches == 0, "Bayer-8 not bit-identical to the direct formula (%ld mismatches)",
+          mismatches);
   }
 
   // the HUD shows td_ditherName(method): pin the name<->method mapping

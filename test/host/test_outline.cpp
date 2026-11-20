@@ -5,8 +5,9 @@
 // pins the render path — golden frames identical across every dither method
 // (only the 0.0/2.0 endpoint shades ever reach the target), the library's
 // RGB565 outline pin, seam audits, feature-edge classification acceptance,
-// hidden-line removal, determinism, the opt-out identity against K5, and the
-// opt-in depth test across composed passes (O10).
+// hidden-line removal, determinism, the opt-out identity against K5, the
+// opt-in depth test across composed passes (O10), and a frame with nothing
+// to draw (O11).
 //
 // naming note: "feature edges" / "contour" here — the suite already uses
 // "silhouette" to mean the covered-pixel footprint.
@@ -27,19 +28,19 @@
 #include "test_common.h"
 
 // the K5 golden barrel fixture from test_render.cpp, reproduced exactly:
-// legacy camera, oblique light, demo ambient, demo pose.
+// fixed camera, oblique light, demo ambient, demo pose.
 static const float TILT = -0.30f;
 
-static void setLegacyCamera(TD_Camera &cam) {
+static void setFixedCamera(TD_Camera &cam) {
   cam.lookAt({0.0f, 0.0f, -4.0f}, {0.0f, 0.0f, 0.0f});
-  cam.setFocalPixels(13.0f * sqrtf(16.0f - 1.0f));  // fit: FIT_PX * sqrt(D*D - 1)
+  cam.setFocalPixels(13.0f * sqrtf(16.0f - 1.0f));  // a unit sphere at 4 fits a 13 px radius
   cam.setNearSkip(0.25f);
   cam.setCenterPixels(W * 0.5f, H * 0.5f);
 }
 
 static void setupK5(TD_Scene &scene, TD_Object &obj) {
   scene.add(obj);
-  setLegacyCamera(scene.camera);
+  setFixedCamera(scene.camera);
   scene.light.setDirection(0.6f, 0.45f);
   scene.light.setIntensity(1.0f);
   scene.setAmbient(0.15f);
@@ -548,7 +549,7 @@ void runOutlineTests() {
     CHECK(rec.oob == 0, "%d outline seam calls out of bounds", rec.oob);
   }
 
-  // ---- O4. WHITE faces fill solid (D2's eyeball case) ----
+  // ---- O4. WHITE faces fill solid (the eyeball case) ----
   // a whole-object WHITE override under OUTLINE fills at 2.0: the frame is a
   // solid silhouette (ink is invisible against the white fill), at least as
   // covered as the shaded ambient-1.0 silhouette.
@@ -732,7 +733,7 @@ void runOutlineTests() {
       setupK5(scene, sphere);
       sphere.setInk(false);
       renderToChecked(scene, target, TD_WIREFRAME);
-      CHECK(stats().count == 0, "an inkless object under TD_WIREFRAME must land nothing (%d lit)",
+      CHECK(stats().count == 0, "an inkless object under TD_WIREFRAME must land nothing (%ld lit)",
             stats().count);
     }
     {
@@ -780,7 +781,7 @@ void runOutlineTests() {
       TD_Object big(bigMesh), small(smallMesh);
       scene.add(big);
       scene.add(small);
-      setLegacyCamera(scene.camera);
+      setFixedCamera(scene.camera);
       big.setScale(2.0f);
       small.setScale(1.2f);
       small.setPosition(cd * sinf(phi), 0.0f, -cd * cosf(phi));
@@ -824,7 +825,7 @@ void runOutlineTests() {
             TD_Object ball(m ? coarse : dense), box(boxMesh);
             scene.add(ball);
             if (behind) scene.add(box);
-            setLegacyCamera(scene.camera);
+            setFixedCamera(scene.camera);
             ball.setScale(2.0f);
             ball.setRotation(0.2f * (float)k, 0.7f * (float)k, 0.0f);
             ball.setInkGroup(grouped ? 7 : 0);
@@ -847,7 +848,7 @@ void runOutlineTests() {
       scene.add(big);
       scene.add(small);
       scene.add(box);
-      setLegacyCamera(scene.camera);
+      setFixedCamera(scene.camera);
       big.setScale(2.0f);
       small.setScale(1.2f);
       small.setPosition(cd * sinf(1.45f), 0.0f, -cd * cosf(1.45f));
@@ -1295,8 +1296,8 @@ void runOutlineTests() {
     TD_Object box(boxMesh), ball(sphereMesh);
     nearS.add(box);
     farS.add(ball);
-    setLegacyCamera(nearS.camera);
-    setLegacyCamera(farS.camera);
+    setFixedCamera(nearS.camera);
+    setFixedCamera(farS.camera);
     box.setScale(1.3f);
     box.setRotation(TILT, 0.7f, 0.0f);
     box.setPosition(-0.4f, 0.0f, -0.8f);
@@ -1566,8 +1567,8 @@ void runOutlineTests() {
     TD_Object ball(sphereMesh), box(boxMesh);
     nearS.add(ball);
     farS.add(box);
-    setLegacyCamera(nearS.camera);
-    setLegacyCamera(farS.camera);
+    setFixedCamera(nearS.camera);
+    setFixedCamera(farS.camera);
     ball.setScale(1.2f);
     ball.setPosition(0.0f, 0.0f, -0.5f);
     box.setScale(3.0f);
@@ -1617,9 +1618,9 @@ void runOutlineTests() {
     farS.add(ball);
     nearSmall.add(boxS);
     farSmallS.add(ballS);
-    for (TD_Scene *s : {&nearS, &farS, &emptyS}) setLegacyCamera(s->camera);
+    for (TD_Scene *s : {&nearS, &farS, &emptyS}) setFixedCamera(s->camera);
     for (TD_Scene *s : {&nearSmall, &farSmallS}) {
-      setLegacyCamera(s->camera);
+      setFixedCamera(s->camera);
       s->camera.setCenterPixels(SW * 0.5f, SH * 0.5f);
     }
     for (TD_Object *o : {&box, &boxS}) {
@@ -1778,8 +1779,8 @@ void runOutlineTests() {
     TD_Object big(bigMesh), small(smallMesh);
     bigS.add(big);
     smallS.add(small);
-    setLegacyCamera(bigS.camera);
-    setLegacyCamera(smallS.camera);
+    setFixedCamera(bigS.camera);
+    setFixedCamera(smallS.camera);
     big.setScale(2.0f);
     small.setScale(1.2f);
     small.setPosition(cd * sinf(phi), 0.0f, -cd * cosf(phi));
@@ -1791,7 +1792,7 @@ void runOutlineTests() {
       TD_Object bigToo(bigMesh), smallToo(smallMesh);
       both.add(bigToo);
       both.add(smallToo);
-      setLegacyCamera(both.camera);
+      setFixedCamera(both.camera);
       bigToo.setScale(2.0f);
       smallToo.setScale(1.2f);
       smallToo.setPosition(cd * sinf(phi), 0.0f, -cd * cosf(phi));
@@ -1819,8 +1820,8 @@ void runOutlineTests() {
     TD_Object box(boxMesh), front(smallMesh);
     boxS.add(box);
     frontS.add(front);
-    setLegacyCamera(boxS.camera);
-    setLegacyCamera(frontS.camera);
+    setFixedCamera(boxS.camera);
+    setFixedCamera(frontS.camera);
     box.setScale(1.4f);
     box.setPosition(0.0f, 0.0f, -1.7f);
     box.setInk(false);
@@ -1846,6 +1847,73 @@ void runOutlineTests() {
     CHECK(inBox > 10 && differ == 0,
           "a fill outside the group must stamp no group over a member's (%ld px differ; %ld inked)",
           differ, inBox);
+  }
+
+  // ---- O11. a frame with nothing to draw touches no buffer ----
+  // a scene whose one object is hidden, and a scene with no object at all,
+  // render under TD_OUTLINE, with and without the depth test: on a renderer
+  // whose depth buffer was never sized (the first render; under the depth
+  // test with a clear asked for before it), and on one whose depth buffer
+  // was sized for a smaller target. each render and each pass succeeds and
+  // draws nothing, and the next frame of a shown object draws exactly what
+  // a fresh renderer draws. a write past either buffer is a crash or an
+  // asan report.
+  {
+    TD_SphereMesh sphereMesh;
+    static uint8_t want[H][W];
+    TD_MonoTarget small(tdTestPlot, nullptr, 32, 8);
+    TD_Scene shown, hidden, none;
+    TD_Object ball(sphereMesh), ghost(sphereMesh);
+    shown.add(ball);
+    hidden.add(ghost);
+    ghost.setVisible(false);
+    for (TD_Scene *s : {&shown, &hidden, &none}) setFixedCamera(s->camera);
+
+    hidden.setRenderMode(TD_OUTLINE);
+    clearFb();
+    CHECK(hidden.render(target), "a hidden object's first outline render failed (status %d)",
+          (int)hidden.lastStatus());
+    CHECK(stats().count == 0, "a hidden object's outline frame must draw nothing (%ld px)",
+          stats().count);
+
+    for (int test = 0; test < 2; ++test) {
+      {
+        TD_Renderer fresh;
+        fresh.setMode(TD_OUTLINE);
+        fresh.setOutlineDepthTest(test == 1);
+        clearFb();
+        CHECK(fresh.render(shown, shown.camera, target), "render failed");
+        std::memcpy(want, fb, sizeof fb);
+      }
+      for (TD_Scene *s : {&hidden, &none}) {
+        const char *what = s == &hidden ? "a hidden object" : "an empty scene";
+        TD_Renderer unsized, grown;
+        for (TD_Renderer *r : {&unsized, &grown}) {
+          r->setMode(TD_OUTLINE);
+          r->setOutlineDepthTest(test == 1);
+        }
+        unsized.clearOutlineDepth();
+        CHECK(grown.render(shown, shown.camera, small), "render on the small target failed");
+        for (TD_Renderer *r : {&unsized, &grown}) {
+          clearFb();
+          CHECK(r->render(*s, s->camera, target) && r->lastDrawCount() == 0 &&
+                    stats().count == 0,
+                "%s (depth test %d) must render, drawing nothing (%ld px)", what, test,
+                stats().count);
+          clearFb();
+          CHECK(target.beginFrame(), "beginFrame failed");
+          r->clearOutlineDepth();
+          CHECK(r->renderPass(*s, s->camera, target) && stats().count == 0,
+                "%s (depth test %d) must pass, drawing nothing (%ld px)", what, test,
+                stats().count);
+          target.endFrame();
+          clearFb();
+          CHECK(r->render(shown, shown.camera, target), "render failed");
+          CHECK(std::memcmp(want, fb, sizeof fb) == 0,
+                "after %s (depth test %d) a frame must draw as a fresh renderer's", what, test);
+        }
+      }
+    }
   }
 
   // ---- eyeball frames (no checks; visual sanity in the log) ----

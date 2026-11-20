@@ -16,20 +16,20 @@
 #include "test_common.h"
 
 // the K5 golden barrel fixture from test_render.cpp, reproduced exactly:
-// legacy camera, oblique light, demo ambient, demo pose. Q5 and Q12 hash
+// fixed camera, oblique light, demo ambient, demo pose. Q5 and Q12 hash
 // equality depends on every value below.
 static const float TILT = -0.30f;
 
-static void setLegacyCamera(TD_Camera &cam) {
+static void setFixedCamera(TD_Camera &cam) {
   cam.lookAt({0.0f, 0.0f, -4.0f}, {0.0f, 0.0f, 0.0f});
-  cam.setFocalPixels(13.0f * sqrtf(16.0f - 1.0f));  // fit: FIT_PX * sqrt(D*D - 1)
+  cam.setFocalPixels(13.0f * sqrtf(16.0f - 1.0f));  // a unit sphere at 4 fits a 13 px radius
   cam.setNearSkip(0.25f);
   cam.setCenterPixels(W * 0.5f, H * 0.5f);
 }
 
 static void setupK5(TD_Scene &scene, TD_Object &obj) {
   scene.add(obj);
-  setLegacyCamera(scene.camera);
+  setFixedCamera(scene.camera);
   scene.light.setDirection(0.6f, 0.45f);
   scene.light.setIntensity(1.0f);
   scene.setAmbient(0.15f);

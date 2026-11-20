@@ -87,6 +87,7 @@ int main() {
   runOutlineTests();
   runExportFixtureTests();
   runDecimatedFixtureTests();
+  runQuickstartTests();
 
   if (failures == 0)
     std::printf("\nALL CHECKS PASSED\n");

@@ -3,7 +3,7 @@
 // frames, and fuzzing, driven through the scene API with the renderer
 // exercised directly (TD_Renderer::render with a TD_Scene and its camera).
 //
-// everything single-object runs under the legacy mapping: identity view
+// everything single-object runs under one fixed camera: identity view
 // basis at eye (0,0,-4), object at the origin, scale 1 — the configuration
 // that pins the golden frames bit-for-bit (M == R_obj elementwise,
 // T == (0,0,4), view.z evaluated in a fixed expression order).
@@ -21,16 +21,16 @@
 // demo pose tilt: top of the model tipped toward the camera.
 static const float TILT = -0.30f;
 
-static void setLegacyCamera(TD_Camera &cam) {
+static void setFixedCamera(TD_Camera &cam) {
   cam.lookAt({0.0f, 0.0f, -4.0f}, {0.0f, 0.0f, 0.0f});
-  cam.setFocalPixels(13.0f * sqrtf(16.0f - 1.0f));  // fit: FIT_PX * sqrt(D*D - 1)
+  cam.setFocalPixels(13.0f * sqrtf(16.0f - 1.0f));  // a unit sphere at 4 fits a 13 px radius
   cam.setNearSkip(0.25f);
   cam.setCenterPixels(W * 0.5f, H * 0.5f);
 }
 
-// base fixture: legacy camera, elevated headlight, demo ambient.
+// base fixture: fixed camera, elevated headlight, demo ambient.
 static void setupBase(TD_Scene &scene) {
-  setLegacyCamera(scene.camera);
+  setFixedCamera(scene.camera);
   scene.light.setDirection(0.0f, 0.45f);
   scene.light.setIntensity(1.0f);
   scene.setAmbient(0.15f);
@@ -145,7 +145,7 @@ void runRenderTests() {
   // for FLOYD/ATKINS pins the kernels, serpentine scan, absorb rules and the
   // span->shade-buffer detour. distinct hashes per method also prove the
   // render path honors the target's dither state.
-  // pinned golden hashes under the legacy mapping; regenerate them only
+  // pinned golden hashes under the fixed camera; regenerate them only
   // deliberately, never as a casual refresh.
   {
     static const uint64_t GOLDEN_FRAME[TD_DITHER_COUNT] = {
