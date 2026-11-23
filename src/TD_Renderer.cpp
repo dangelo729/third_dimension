@@ -1071,12 +1071,25 @@ static bool clipToBand(float x0, float y0, float dxf, float dyf, float bx, float
   return t0 <= t1;
 }
 
+// the clip puts an endpoint on the band only to within float rounding of
+// the segment's length: past about 2^24 px (found by test) that rounding
+// leaves it more than a pixel outside, and further out past the int range,
+// where the conversion below is undefined and the walk runs for billions of
+// steps. such an endpoint is held a pixel outside the band, which keeps
+// every endpoint the clip places to within a pixel as it is.
+static inline void holdToBand(float &v, float band) {
+  const float lim = band + 1.0f;
+  if (v > lim) v = lim;
+  else if (v < -lim) v = -lim;
+}
+
 void TD_Renderer::drawLineShade(TD_RenderTarget &t, float x0, float y0, float x1, float y1,
                                 float shade) {
   if (!(isfinite(x0) && isfinite(y0) && isfinite(x1) && isfinite(y1))) return;
   const float bx = (float)TD_GUARD_BAND * (float)tw_;
   const float by = (float)TD_GUARD_BAND * (float)th_;
   const float dxf = x1 - x0, dyf = y1 - y0;
+  if (!(isfinite(dxf) && isfinite(dyf))) return;  // a span past FLT_MAX: the clip would give NaN
   float t0 = 0.0f, t1 = 1.0f;
   if (!clipToBand(x0, y0, dxf, dyf, bx, by, t0, t1)) return;
   if (t1 < 1.0f) {      // clip the far endpoint first: it derives from x0/y0
@@ -1087,6 +1100,10 @@ void TD_Renderer::drawLineShade(TD_RenderTarget &t, float x0, float y0, float x1
     x0 = x0 + t0 * dxf;
     y0 = y0 + t0 * dyf;
   }
+  holdToBand(x0, bx);
+  holdToBand(y0, by);
+  holdToBand(x1, bx);
+  holdToBand(y1, by);
 
   int ix0 = (int)floorf(x0), iy0 = (int)floorf(y0);
   int ix1 = (int)floorf(x1), iy1 = (int)floorf(y1);
@@ -1183,6 +1200,7 @@ void TD_Renderer::drawLineDepth(TD_RenderTarget &t, float x0, float y0, float z0
   const float bx = (float)TD_GUARD_BAND * (float)tw_;
   const float by = (float)TD_GUARD_BAND * (float)th_;
   const float dxf = x1 - x0, dyf = y1 - y0, dzf = z1 - z0;
+  if (!(isfinite(dxf) && isfinite(dyf))) return;  // as in drawLineShade
   float t0 = 0.0f, t1 = 1.0f;
   if (!clipToBand(x0, y0, dxf, dyf, bx, by, t0, t1)) return;
   if (t1 < 1.0f) {
@@ -1195,6 +1213,10 @@ void TD_Renderer::drawLineDepth(TD_RenderTarget &t, float x0, float y0, float z0
     y0 = y0 + t0 * dyf;
     z0 = z0 + t0 * dzf;
   }
+  holdToBand(x0, bx);
+  holdToBand(y0, by);
+  holdToBand(x1, bx);
+  holdToBand(y1, by);
 
   int ix0 = (int)floorf(x0), iy0 = (int)floorf(y0);
   int ix1 = (int)floorf(x1), iy1 = (int)floorf(y1);

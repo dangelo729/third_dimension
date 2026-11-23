@@ -20,16 +20,40 @@
 // dithered 3-D on any Adafruit_GFX display through drawPixel. designed for
 // 1-bit panels (SSD1306 etc.) where lit/dark default to 1/0 — every mono
 // driver's WHITE/BLACK; on a color panel, custom lit/dark colors give
-// two-color dithering for free.
+// two-color dithering, at one drawPixel call per pixel drawn and, with
+// auto-clear on, one per pixel of the panel to clear it: on an unbuffered
+// panel each of those is a write over the bus, every frame.
 //
-// dimensions are read from the GFX object lazily at every beginFrame, so
-// constructing the target before display.begin() is safe and setRotation()
-// changes are picked up automatically. there is no begin() on this class by
-// design — nothing to mis-order.
+// dimensions are read from the GFX object whenever the renderer asks for
+// them, before it draws, so constructing the target before display.begin()
+// is safe and a setRotation() lands in the next frame. a diffusion method
+// sizes its buffers from the display when it is selected: select it after
+// display.begin(). there is no begin() on this class by design — nothing to
+// mis-order.
 class TD_GFXMonoTarget : public TD_MonoTarget {
  public:
   explicit TD_GFXMonoTarget(Adafruit_GFX &gfx, uint16_t lit = 1, uint16_t dark = 0)
       : TD_MonoTarget(gfx.width(), gfx.height()), gfx_(gfx), lit_(lit), dark_(dark) {}
+
+  // the display's size as it is now, the target's own size following it.
+  int16_t width() override {
+    setSize(gfx_.width(), gfx_.height());
+    return TD_MonoTarget::width();
+  }
+  int16_t height() override {
+    setSize(gfx_.width(), gfx_.height());
+    return TD_MonoTarget::height();
+  }
+
+  // the diffusion buffers sized to the display as it is now.
+  bool setDither(TD_Dither m) {
+    setSize(gfx_.width(), gfx_.height());
+    return TD_MonoTarget::setDither(m);
+  }
+  bool reserve() {
+    setSize(gfx_.width(), gfx_.height());
+    return TD_MonoTarget::reserve();
+  }
 
   bool beginFrame() override {
     setSize(gfx_.width(), gfx_.height());

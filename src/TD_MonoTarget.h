@@ -62,8 +62,9 @@ class TD_MonoTarget : public TD_RenderTarget {
 
  protected:
   // subclass flavor (e.g. the GFX adapter): construct without a callback and
-  // override plotPixel instead; update dimensions from the subclass's
-  // beginFrame via setSize before calling the base beginFrame.
+  // override plotPixel instead; update dimensions via setSize before the
+  // renderer reads width()/height() (the GFX adapter does it in its width(),
+  // height() and beginFrame overrides).
   TD_MonoTarget(int16_t w, int16_t h);
   virtual void plotPixel(int16_t x, int16_t y, uint8_t on);
   void setSize(int16_t w, int16_t h);

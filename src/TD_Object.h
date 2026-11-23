@@ -15,10 +15,19 @@ class TD_Renderer;
 // global scope like any Arduino peripheral object); the scene links them
 // through an intrusive pointer, so adding an object allocates nothing.
 // an object belongs to at most one scene at a time. mesh sharing is
-// supported — many objects may reference one mesh.
+// supported — many objects may reference one mesh. an object still in a
+// scene when that scene is destroyed keeps its link and cannot join another
+// scene: remove() it before the scene goes.
 class TD_Object {
  public:
   explicit TD_Object(const TD_Mesh &mesh);
+
+  // copying takes the mesh and every attribute but never the scene link: a
+  // copy starts in no scene, and an object assigned to (obj =
+  // TD_Object(otherMesh), to give it another mesh) keeps its own place in
+  // its scene.
+  TD_Object(const TD_Object &other);
+  TD_Object &operator=(const TD_Object &other);
 
   void setPosition(float x, float y, float z);  // world units
   // radians, applied v' = Rx*Ry*Rz*v — Z (roll) first, then Y (yaw = the

@@ -677,5 +677,36 @@ void runPrimitiveTests() {
     }
   }
 
+  // ---- P13. a mesh past 21,845 triangles ----
+  // the triangle cap is ntris's own, 65,535: TD_SphereMesh(150, 100) has
+  // 29,700, so its 89,100 corner normals run past 65,535. it validates and
+  // draws in every mode in bounds, and shades as TD_SphereMesh(120, 80)
+  // (19,040 triangles) does, to within 5% of its lit pixels.
+  {
+    TD_SphereMesh fine(150, 100), coarse(120, 80);
+    CHECK(fine.valid() && fine.ntris == 29700 && td_validateMesh(fine),
+          "sphere(150,100): must build and validate with 29700 triangles (%u)",
+          (unsigned)fine.ntris);
+    long lit[2] = {0, 0};
+    const TD_Mesh *meshes[2] = {&fine, &coarse};
+    for (int i = 0; i < 2; ++i)
+      for (int m = 0; m < TD_RENDER_MODE_COUNT; ++m) {
+        TD_Scene scene;
+        TD_Object obj(*meshes[i]);
+        scene.add(obj);
+        setSmokeCamera(scene.camera, *meshes[i]);
+        scene.setRenderMode((TD_RenderMode)m);
+        clearFb();
+        CHECK(scene.render(target), "sphere %d mode %d: render failed (status %d)", i, m,
+              (int)scene.lastStatus());
+        CHECK(scene.renderer().lastDrawCount() > 1000, "sphere %d mode %d drew %u faces", i, m,
+              (unsigned)scene.renderer().lastDrawCount());
+        if (m == TD_SHADED) lit[i] = stats().count;
+      }
+    CHECK(lit[1] > 100 && std::labs(lit[0] - lit[1]) <= lit[1] / 20,
+          "sphere(150,100) shades %ld px lit, sphere(120,80) %ld", lit[0], lit[1]);
+    CHECK(oobCount == 0, "large-mesh renders plotted out of bounds %ld times", oobCount);
+  }
+
   clearFb();
 }

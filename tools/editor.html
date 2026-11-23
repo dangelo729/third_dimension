@@ -1725,7 +1725,6 @@ function signedVolume(verts, tris) {
 // ---- budget (exact closed forms from the mesh-builder layout) -------------
 
 const CAP_U16 = 65535;
-const CAP_TRIS = 21845;  // 3*ntris (the cnorm table) must fit uint16
 
 // export counts: what bake() will actually emit. For a decimated part that
 // means running the real collapse (on the molded shape — QEM keeps detail
@@ -1763,8 +1762,8 @@ function budgetOf(c) {
   if (c.nv > CAP_U16) over.push(`${c.nv} verts exceeds the uint16 cap (65535)`);
   if (c.nf > CAP_U16) over.push(`${c.nf} faces exceeds the uint16 cap (65535)`);
   if (c.nloop > CAP_U16) over.push(`${c.nloop} loop entries exceeds the uint16 cap (65535)`);
-  if (c.nt > CAP_TRIS) over.push(`${c.nt} tris exceeds the corner-normal cap (21845: 3x tris must fit uint16)`);
-  const frac = Math.max(c.nv / CAP_U16, c.nf / CAP_U16, c.nloop / CAP_U16, c.nt / CAP_TRIS);
+  if (c.nt > CAP_U16) over.push(`${c.nt} tris exceeds the uint16 cap (65535)`);
+  const frac = Math.max(c.nv / CAP_U16, c.nf / CAP_U16, c.nloop / CAP_U16, c.nt / CAP_U16);
   return { flash, ram, over, hot: frac > 0.8 };
 }
 
@@ -2120,7 +2119,7 @@ return {
   irregularOf, irregularDensity, applyIrregular, IRREGULAR_MAX, IRREGULAR_DENSITY,
   raycastMoldSurface, decimateTarget, decimateMesh,
   AMBIENT, LIGHT_DIR, shadeOf,
-  validateMeshJS, signedVolume, countsOf, budgetOf, CAP_U16, CAP_TRIS,
+  validateMeshJS, signedVolume, countsOf, budgetOf, CAP_U16,
   bake, emitHeader, cIdentifier, fileStem, fmtFixed,
   // dev
   diffMesh, diffPrimitives,

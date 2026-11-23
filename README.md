@@ -13,8 +13,9 @@ See it running at https://dangelo.engineering (the ship in a bottle there is dra
 - **Arduino IDE:** download this repository as a ZIP, then Sketch > Include Library > Add .ZIP Library.
 - **PlatformIO:** `lib_deps = https://github.com/dangelo729/third_dimension.git`
 
-It needs a 32-bit board with hardware floating point (Teensy 4.x, ESP32, STM32F4 and up, RP2350);
-on AVR it stops with a compile error. `<ThirdDimension.h>` uses no other library.
+It needs a 32-bit board with hardware floating point; its examples are built for Teensy 4.1,
+ESP32 and Raspberry Pi Pico 2 (RP2350). On AVR it stops with a compile error.
+`<ThirdDimension.h>` uses no other library.
 `<ThirdDimension_GFX.h>`, for Adafruit_GFX displays, needs the Adafruit GFX Library, which is not
 installed for you: add it and your display's driver (here Adafruit SSD1306) yourself.
 
@@ -43,7 +44,8 @@ void loop() {
 ```
 
 This is `examples/SpinningCube`. The camera frames the scene at its first render and the key
-light shines from the upper left, so nothing more is needed. The main calls:
+light shines from the upper left, so nothing more is needed. An object added later is not
+framed until `scene.camera.refit()`. The main calls:
 
 - **Meshes:** `TD_BoxMesh`, `TD_SphereMesh`, `TD_EllipsoidMesh`, `TD_CylinderMesh`, `TD_ConeMesh`,
   `TD_PrismMesh`, `TD_TorusMesh`, `TD_PlaneMesh`, or a header made by `tools/obj2mesh.py`. A

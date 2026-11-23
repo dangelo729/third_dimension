@@ -37,12 +37,19 @@ class TD_Camera {
   void setTarget(float x, float y, float z);      // look-at point; default bounds center
   // expert full pose: forward = normalize(target - eye), right/up built from
   // `up` (degenerate up falls back to +Z). overrides orbit/distance intent.
+  // under a fit (the default), the fit is worked out from the eye's distance
+  // to the fit sphere's center; an eye inside the sphere, where no fit
+  // exists, sees a 60-degree vertical field of view. setFov or
+  // setFocalPixels choose the view instead.
   void lookAt(TD_Vec3 eye, TD_Vec3 target, TD_Vec3 up = {0.0f, 1.0f, 0.0f});
 
   // ---- projection details ----
   void setCenterPixels(float cx, float cy);  // principal point override
   // faces with any loop vertex closer than this (view z) are skipped whole —
-  // there is no near-plane clipping; this bounds focal/z blowup.
+  // there is no near-plane clipping; this bounds focal/z blowup. any value
+  // is taken: at 0 or below, faces reaching the eye's plane or behind it are
+  // drawn, wrongly, since a point behind the eye projects mirrored through
+  // the center.
   void setNearSkip(float worldUnits);
 
   // ---- resolved state (used by the renderer; public for host tests) ----

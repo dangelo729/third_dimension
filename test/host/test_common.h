@@ -28,13 +28,17 @@ extern long oobCount;
 // total CHECK failures across all suites; the process exit code keys off it.
 extern int failures;
 
+// total CHECKs evaluated across all suites, printed at the end of the run.
+extern long checks;
+
 // matches TD_MonoTarget::PlotFn and TD_DiffusePlotFn; `user` is unused.
 void tdTestPlot(void *user, int16_t x, int16_t y, uint8_t on);
 
-// non-fatal assertion: records the failure and keeps going so a single run
-// reports every broken invariant.
+// non-fatal assertion: counts the check, records a failure and keeps going
+// so a single run reports every broken invariant.
 #define CHECK(cond, ...)                                \
   do {                                                  \
+    ++checks;                                           \
     if (!(cond)) {                                      \
       ++failures;                                       \
       std::printf("FAIL %s:%d: ", __FILE__, __LINE__);  \
@@ -70,7 +74,7 @@ float frand(float lo, float hi);
 
 // suite entry points, run in this order by test_main.cpp. the outline suite
 // runs after every fuzzing suite so its draws leave the shared LCG fuzz
-// stream of the earlier suites untouched; the fixture and quick-start
+// stream of the earlier suites untouched; the fixture, quick-start and GFX
 // suites draw no fuzz at all, so they run last.
 void runDitherTests();
 void runRenderTests();
@@ -81,5 +85,6 @@ void runOutlineTests();
 void runExportFixtureTests();
 void runDecimatedFixtureTests();
 void runQuickstartTests();
+void runGfxTests();
 
 #endif  // TD_TEST_COMMON_H

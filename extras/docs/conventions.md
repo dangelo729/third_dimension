@@ -68,7 +68,9 @@ the exporter.
 Positive angles rotate counter-clockwise looking down the axis from its
 positive end, in R1's right-handed reading; as drawn that is clockwise, and
 from the default camera, which looks along +Z, a positive `rz` turns +X
-toward +Y, counter-clockwise on the screen.
+toward +Y, counter-clockwise on the screen. Likewise a positive `ry` brings
+the model's right side (+X) toward the camera and turns its front to the
+left of the screen.
 `TD_Object::setRotation(rx, ry, rz)` applies **Z (roll) first, then Y (yaw
 — the turntable spin), then X (pitch)**. This order is an API commitment:
 it will not change, and animation code may rely on it.

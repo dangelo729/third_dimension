@@ -16,6 +16,10 @@ constexpr uint8_t kFitFocal = 3;   // raw projection scale (expert)
 // basis non-degenerate.
 constexpr float kOrbitElMax = 88.8f * 3.14159265358979323846f / 180.0f;
 
+// vertical field of view, degrees, framed by a lookAt pose whose eye is
+// inside the fit sphere, where no fit exists.
+constexpr float kLookAtFovDeg = 60.0f;
+
 // world-to-view rotation for a pose at `eye` looking toward `target`:
 //   f = normalize(target - eye)   (degenerate -> unit +Z)
 //   r = normalize(cross(up, f))   (up parallel to f retried as (0, 0, 1))
@@ -106,7 +110,9 @@ void TD_Camera::setNearSkip(float worldUnits) { nearSkip_ = worldUnits; }
 //       direction convention
 //   - auto-fit focal: focalForFit(R, D, margin * 0.5 * min(w, h))
 //     (fitScene latches the scene bounds at the first render, refit()
-//     re-latches; fitRadius uses the fixed user radius instead)
+//     re-latches; fitRadius uses the fixed user radius instead); a lookAt
+//     eye inside the fit sphere (D <= R) has no fit and gets the focal of a
+//     60-degree vertical field of view
 //   - FOV intent:     focal = focalForFovY(fovDeg_, targetH)
 //   - raw focal:      focalPx_ used as-is
 //   - projection center defaults to the target center unless
@@ -138,7 +144,9 @@ bool TD_Camera::resolve(int16_t targetW, int16_t targetH, TD_Vec3 sceneCenter,
     eye_ = tdAdd(C, tdScale(dir, D));
     rot_ = lookRotation(eye_, C, tdVec3(0.0f, 1.0f, 0.0f));
   }
-  if (fitMode_ == kFitScene || fitMode_ == kFitRadius) {
+  if (explicitPose_ && (fitMode_ == kFitScene || fitMode_ == kFitRadius) && D <= R) {
+    focalPx_ = focalForFovY(kLookAtFovDeg, targetH);
+  } else if (fitMode_ == kFitScene || fitMode_ == kFitRadius) {
     focalPx_ =
         focalForFit(R, D, fitMargin_ * 0.5f * (float)(targetW < targetH ? targetW : targetH));
   } else if (fitMode_ == kFitFov) {

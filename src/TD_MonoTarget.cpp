@@ -149,10 +149,13 @@ void TD_MonoTarget::plotPixel(int16_t x, int16_t y, uint8_t on) {
 
 void TD_MonoTarget::setSize(int16_t w, int16_t h) {
   // subclass hook: refresh dimensions (e.g. after a display rotation)
-  // before calling the base beginFrame. ensureFrame sizes the diffusion
+  // before the renderer reads them. ensureFrame sizes the diffusion
   // buffers against these dimensions.
   w_ = w;
   h_ = h;
+  // a size that outgrows the diffusion buffers mid-frame would record past
+  // their end: the rest of the frame takes the ordered path instead.
+  if (edActive_ && (int32_t)w_ * h_ > capPix_) edActive_ = false;
 }
 
 bool TD_MonoTarget::ensureFrame() {

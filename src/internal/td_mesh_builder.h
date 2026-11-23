@@ -47,7 +47,7 @@ struct TD_MeshBuilder {
   void endFace();            // writes faces[fAt] = {triStart, triCount, loopStart, loopCount}
 
   // fills `out` with the block's array pointers and final counts and
-  // transfers block ownership to the caller (freed with td_meshBuilderFree).
+  // transfers block ownership to the caller (freed with freeMesh).
   // debug builds assert every cursor equals its begin() count.
   bool finish(TD_Mesh &out, float boundRadius);
 

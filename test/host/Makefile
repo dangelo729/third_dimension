@@ -16,13 +16,14 @@ ifeq ($(origin CXX),default)
 CXX := clang++
 endif
 CXXFLAGS := -std=c++17 -O1 -g -Wall -Wextra -Werror -ffp-contract=off
-CPPFLAGS := -I../../src
+# gfx_stub holds a stand-in Adafruit_GFX.h, for the GFX adapter suite.
+CPPFLAGS := -I../../src -Igfx_stub
 
 CORE_SRC := $(wildcard ../../src/*.cpp) $(wildcard ../../src/internal/*.cpp)
 TEST_SRC := $(wildcard test_*.cpp)
 HDRS := $(wildcard ../../src/*.h) $(wildcard ../../src/internal/*.h) \
         $(wildcard ../../src/models/*.h) test_common.h \
-        TD_Model_ExportFixture.h TD_Model_DecimatedFixture.h
+        TD_Model_ExportFixture.h TD_Model_DecimatedFixture.h gfx_stub/Adafruit_GFX.h
 
 td_host_tests: $(CORE_SRC) $(TEST_SRC) $(HDRS)
 	$(CXX) $(CXXFLAGS) $(CPPFLAGS) $(CORE_SRC) $(TEST_SRC) -o $@

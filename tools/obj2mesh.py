@@ -220,9 +220,6 @@ def main():
         sys.exit(f"{args.obj}: all triangles degenerate")
     if len(out_tris) > 65535:
         sys.exit(f"{args.obj}: {len(out_tris)} triangles exceeds uint16 range")
-    if 3 * len(out_tris) > 65535:
-        sys.exit(f"{args.obj}: corner-normal table (3*{len(out_tris)} entries)"
-                 " exceeds uint16 range")
     if len(loop_flat) > 65535:
         sys.exit(f"{args.obj}: face-loop table ({len(loop_flat)} entries) exceeds uint16 range")
 

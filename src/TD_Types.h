@@ -74,7 +74,7 @@ enum TD_Status : uint8_t {
   TD_ERR_NO_TARGET,       // target missing or reported non-positive dimensions
   TD_ERR_ALLOC,           // working-buffer allocation failed (nothing was drawn)
   TD_ERR_BAD_CAMERA,      // camera intent could not resolve (e.g. distance <= radius)
-  TD_ERR_UNSUPPORTED,     // reserved for future targets; never returned in v1
+  TD_ERR_UNSUPPORTED,     // reserved for future targets; never returned
                           //   (every mode x target cell is defined behavior)
 };
 

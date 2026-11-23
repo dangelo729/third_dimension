@@ -15,8 +15,12 @@
 // building one — no table allocation, no build scratch — while its counts
 // match the mesh and its crease matches the scene's outline crease
 // (TD_Scene::setOutlineEdges). loop-parallel, one entry per faceVerts[] slot:
-//   opp[i]: the face across slot i's directed edge, 0xFFFF when none
-//   flags[i]: bit 0 crease, bit 1 boundary
+//   opp[i]: the face across slot i's directed edge, TD_EDGE_NONE when none
+//   flags[i]: TD_EDGE_CREASE and TD_EDGE_BOUNDARY bits
+#define TD_EDGE_NONE 0xFFFF
+#define TD_EDGE_CREASE 0x01    // dihedral sharper than the crease angle
+#define TD_EDGE_BOUNDARY 0x02  // open-mesh border (or non-manifold extra)
+
 struct TD_MeshEdges {
   const uint16_t *opp;     // faceVertCount entries
   const uint8_t *flags;    // faceVertCount entries

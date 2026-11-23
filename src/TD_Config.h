@@ -34,10 +34,14 @@
 // gap on a unit-radius mesh.
 #define TD_DECAL_BIAS 0.002f
 
-// projected coordinates are clamped to this many multiples of the target
-// dimensions (in float space, before any int conversion) so near-skip-
-// grazing geometry can't trigger float->int overflow or unbounded Bresenham
-// walks off-screen.
+// line endpoints are clipped, in float space before any int conversion, to
+// a band this many multiples of the target dimensions around the origin, so
+// a line's pixel walk stays within a few target widths however far its
+// projection runs. the clip is exact to float rounding of the line's
+// length: an endpoint it leaves more than a pixel outside the band (a line
+// longer than about 2^24 px) is held a pixel outside it, and a line whose
+// span overflows a float draws nothing. fills need no band: their spans are
+// clipped to the target itself.
 #define TD_GUARD_BAND 4
 
 // TD_CEL band-count ceiling. eight bands already exceed what the coarsest

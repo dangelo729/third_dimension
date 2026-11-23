@@ -191,11 +191,15 @@ references GFX, so the dependency exists only for sketches that ask for it.
 - **TD_GFXMonoTarget** — a `TD_MonoTarget` that plots through
   `gfx.drawPixel(x, y, on ? lit : dark)`. Defaults `lit=1, dark=0` match
   every 1-bit driver's WHITE/BLACK; custom colors give two-color dithering
-  on color panels for free. Dimensions are read from the GFX object lazily
-  at every `beginFrame`, so constructing before `display.begin()` is safe
-  and `setRotation()` is picked up automatically. The right target for
-  buffered displays (SSD1306 and friends), where drawPixel is a cheap RAM
-  write.
+  on color panels, at one `drawPixel` per pixel drawn plus, with auto-clear
+  on, one per pixel of the panel to clear it: on an unbuffered panel each
+  is a write over the bus, every frame. Dimensions are read from the GFX
+  object whenever the renderer asks for them, before it draws, so
+  constructing before `display.begin()` is safe and a `setRotation()` lands
+  in the next frame. A diffusion dither sizes its buffers from the display
+  when it is selected, so select it after `display.begin()`. The right
+  target for buffered displays (SSD1306 and friends), where drawPixel is a
+  cheap RAM write.
 - **TD_GFX565Target** — color through per-pixel `drawPixel`: universal but
   slow, and on an *unbuffered* TFT its per-frame `fillScreen` races the
   raster, so the model blinks. For real color, render off-screen into a

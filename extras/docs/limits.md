@@ -7,9 +7,9 @@ Every hard limit and memory budget, with numbers.
 | quantity | hard cap | notes |
 |---|---|---|
 | vertices per mesh | 65 535 | `nverts` is `uint16_t` |
-| triangles per mesh | 21 845 | converter cap: the `3·ntris` corner normals must fit uint16 (`ntris` itself holds 65 535) |
+| triangles per mesh | 65 535 | `ntris` is `uint16_t`; the loop entries below usually cap first |
 | faces per mesh | 65 535 | decal `host` reserves 0xFFFF |
-| polygon-loop entries per mesh | 65 535 | `faceVertCount` |
+| polygon-loop entries per mesh | 65 535 | `faceVertCount`; one per face corner, so 21 845 triangles when every face is a triangle, 32 767 when every face is a quad |
 
 The OBJ converter hard-errors past any cap; the primitive generators fail
 soft — `begin()` refuses the allocation and leaves the mesh empty (`valid()`
@@ -80,8 +80,8 @@ plus one list pointer per light:
 - **Uncapped, like the object list:** hundreds of lights slow the corner
   loop linearly. Real scenes use 1–3.
 - Should the pointer chase ever measure badly, a per-frame flat-array
-  snapshot inside the renderer is a bit-invisible pure optimization — same
-  floats, same arithmetic, same order. Available, not built.
+  snapshot inside the renderer would be a bit-invisible pure optimization —
+  same floats, same arithmetic, same order. It is not built.
 
 ## Cel shading (TD_CEL)
 

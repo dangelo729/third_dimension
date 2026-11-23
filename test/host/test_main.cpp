@@ -9,6 +9,7 @@
 uint8_t fb[H][W];
 long oobCount = 0;
 int failures = 0;
+long checks = 0;
 uint32_t lcg = 0x12345678u;
 
 void tdTestPlot(void *user, int16_t x, int16_t y, uint8_t on) {
@@ -88,10 +89,11 @@ int main() {
   runExportFixtureTests();
   runDecimatedFixtureTests();
   runQuickstartTests();
+  runGfxTests();
 
   if (failures == 0)
-    std::printf("\nALL CHECKS PASSED\n");
+    std::printf("\nALL %ld CHECKS PASSED\n", checks);
   else
-    std::printf("\n%d CHECK(S) FAILED\n", failures);
+    std::printf("\n%d OF %ld CHECKS FAILED\n", failures, checks);
   return failures ? 1 : 0;
 }

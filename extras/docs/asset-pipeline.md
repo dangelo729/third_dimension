@@ -83,7 +83,7 @@ Stable across tool versions:
    degenerate) warns loudly and points at the runtime escape hatch,
    `scene.renderer().setCullSign(-1.0f)`. Prefer fixing the export.
 6. **Hard-errors** past any 16-bit limit — 65 535 vertices, triangles, or loop
-   entries, and 3·ntris corner normals. No silent truncation.
+   entries. No silent truncation.
 7. **Emits** a self-contained header: a banner comment (source file, counts,
    signed volume), a `#pragma once`, `#include <TD_Mesh.h>`, the
    `TD_MESH_FORMAT` handshake (an `#if … #error` guard that turns a stale
@@ -179,6 +179,11 @@ stands in for the built one; otherwise the table builds at runtime as usual, so
 from the same `.cpp` as the mesh header: the registration is keyed on the
 mesh's address, and each translation unit gets its own copy of a `static const`
 mesh.
+
+A table can also be written by hand, as a `TD_MeshEdges` with one entry per
+loop slot: `opp[i]` the face across slot `i`'s edge, or `TD_EDGE_NONE`, and
+`flags[i]` its `TD_EDGE_CREASE` and `TD_EDGE_BOUNDARY` bits. All of these are
+in `<TD_MeshEdges.h>`, which `<ThirdDimension.h>` includes.
 
 ## Checking a conversion
 

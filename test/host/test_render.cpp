@@ -13,6 +13,7 @@
 
 #include "TD_Dither.h"
 #include "TD_MonoTarget.h"
+#include "TD_Primitives.h"
 #include "TD_Scene.h"
 #include <models/TD_Model_Barrel.h>
 
@@ -46,6 +47,37 @@ static bool renderScene(TD_Scene &scene, TD_MonoTarget &target, TD_RenderMode mo
 static void renderChecked(TD_Scene &scene, TD_MonoTarget &target, TD_RenderMode mode) {
   bool ok = renderScene(scene, target, mode);
   CHECK(ok, "render returned false (status %d)", (int)scene.lastStatus());
+}
+
+// a target that plots nothing and counts the pixels that reach it outside
+// its size.
+struct CountingTarget : TD_RenderTarget {
+  int16_t w, h;
+  long oob = 0;
+  CountingTarget(int16_t tw, int16_t th) : w(tw), h(th) {}
+  int16_t width() override { return w; }
+  int16_t height() override { return h; }
+  void plotShade(int16_t x, int16_t y, float shade) override {
+    (void)shade;
+    if (x < 0 || y < 0 || x >= w || y >= h) ++oob;
+  }
+};
+
+// whether the scene lists exactly x, y, z in order (nullptr ends a shorter
+// list). read head by head, since next_ is private: each head is removed in
+// turn, and every object found is added back in the order found.
+static bool listed(TD_Scene &s, TD_Object *x, TD_Object *y, TD_Object *z) {
+  TD_Object *want[3] = {x, y, z}, *found[4] = {nullptr, nullptr, nullptr, nullptr};
+  int n = 0;
+  while (n < 4 && s.firstObject() != nullptr) {
+    found[n] = const_cast<TD_Object *>(s.firstObject());
+    s.remove(*found[n]);
+    ++n;
+  }
+  for (int i = 0; i < n; ++i) s.add(*found[i]);
+  for (int i = 0; i < 3; ++i)
+    if (found[i] != want[i]) return false;
+  return found[3] == nullptr;
 }
 
 void runRenderTests() {
@@ -451,6 +483,136 @@ void runRenderTests() {
             "the near BLACK object must knock lit pixels out of the far silhouette (%ld vs %ld)",
             litBoth, litFar);
     }
+  }
+  {
+    // M3. copying and assigning objects leaves scene membership as it was.
+    // assigning a new object to a scene's middle one, the way to give it
+    // another mesh, keeps it and every object after it in the scene;
+    // assigning the tail to the head keeps the head's place; a copy of a
+    // member starts in no scene, so another scene can take it.
+    TD_SphereMesh sphereMesh;
+    TD_Scene scene, other;
+    TD_Object a(barrel_mesh), b(barrel_mesh), c(barrel_mesh);
+    scene.add(a);
+    scene.add(b);
+    scene.add(c);
+    a.setPosition(-1.2f, 0.0f, 0.0f);
+    c.setPosition(1.2f, 0.0f, 0.0f);
+    b = TD_Object(sphereMesh);
+    CHECK(listed(scene, &a, &b, &c), "assigning to the middle object must keep a, b, c listed");
+    CHECK(&b.mesh() == &sphereMesh, "the assigned object must take the new mesh");
+    TD_Object d(a);
+    other.add(d);
+    CHECK(listed(other, &d, nullptr, nullptr), "a copy of a member must join another scene alone");
+    CHECK(listed(scene, &a, &b, &c), "copying a member must leave its scene as it was");
+    a = c;
+    CHECK(listed(scene, &a, &b, &c), "assigning the tail to the head must keep a, b, c listed");
+    CHECK(a.x() == 1.2f, "the assigned object must take the other's attributes");
+  }
+
+  // ---- N. lookAt alone, the eye inside the scene's bound sphere ----
+  // no fit exists from there: the camera frames a 60-degree vertical field
+  // of view instead, and the box looked at draws. from outside the sphere,
+  // lookAt alone still fits the scene.
+  {
+    TD_BoxMesh boxMesh;
+    TD_Object a(boxMesh), b(boxMesh);
+    TD_Scene scene;
+    scene.add(a);
+    scene.add(b);
+    a.setPosition(-2.0f, 0.0f, 0.0f);
+    b.setPosition(2.0f, 0.0f, 0.0f);
+    scene.camera.lookAt({0.0f, 0.0f, -1.0f}, {2.0f, 0.0f, 0.0f});
+    renderChecked(scene, target, TD_SHADED);
+    CHECK(scene.camera.focalPixels() == TD_Camera::focalForFovY(60.0f, (int16_t)H),
+          "lookAt inside the bound sphere: focal %.4f, want a 60-degree fov's %.4f",
+          (double)scene.camera.focalPixels(), (double)TD_Camera::focalForFovY(60.0f, (int16_t)H));
+    CHECK(stats().count > 20, "lookAt inside the bound sphere: the box drew %ld px",
+          stats().count);
+    scene.camera.lookAt({0.0f, 0.0f, -12.0f}, {0.0f, 0.0f, 0.0f});
+    renderChecked(scene, target, TD_SHADED);
+    const float want = TD_Camera::focalForFit(2.0f + td_meshBoundRadius(boxMesh), 12.0f,
+                                              0.90f * 0.5f * (float)(W < H ? W : H));
+    CHECK(std::fabs(scene.camera.focalPixels() - want) < 1e-3f * want,
+          "lookAt outside the bound sphere: focal %.4f, want the fit's %.4f",
+          (double)scene.camera.focalPixels(), (double)want);
+  }
+
+  // ---- Q. lines that project far past the guard band ----
+  // two slivers seen from both sides, drawn with focals so large their
+  // edges run far out across the screen: one ~1e17 px each way, past where
+  // the band clip is exact, the other so far that an edge's span overflows
+  // a float. in every mode, the outline with and without its depth test,
+  // the frame returns with nothing plotted out of bounds.
+  // then a near-skip from -1 to 0.2 (and 0, -0, NaN, -inf) under objects
+  // placed as far as 1e30: every frame returns, in bounds.
+  {
+    static const float av[3][3] = {{-1.0f, -0.3f, 0.0f}, {1.37f, 0.411f, 0.0f}, {0.0f, 0.5f, 0.0f}};
+    static const float bv[3][3] = {
+        {0.0f, -1.47f, 0.0f}, {1e-37f, 1.118f, 0.0f}, {2e-37f, -1.47f, 0.0f}};
+    static const uint16_t qt[2][3] = {{0, 1, 2}, {0, 2, 1}};
+    static const float qn[6][3] = {{0, 0, -1}, {0, 0, -1}, {0, 0, -1},
+                                   {0, 0, 1},  {0, 0, 1},  {0, 0, 1}};
+    static const uint16_t qf[2][4] = {{0, 1, 0, 3}, {1, 1, 3, 3}};
+    static const uint16_t ql[6] = {0, 1, 2, 0, 2, 1};
+    static const TD_Mesh slivers[2] = {{av, qt, qn, qf, ql, nullptr, 3, 2, 2, 6, 1.0f},
+                                       {bv, qt, qn, qf, ql, nullptr, 3, 2, 2, 6, 1.0f}};
+    const float focals[2] = {4e17f, 1.7e38f}, eyes[2] = {4.0f, 1.0f};
+    for (int s = 0; s < 2; ++s) {
+      CHECK(td_validateMesh(slivers[s]), "sliver %d must validate", s);
+      for (int m = 0; m <= TD_RENDER_MODE_COUNT; ++m) {
+        TD_Scene scene;
+        TD_Object obj(slivers[s]);
+        scene.add(obj);
+        scene.camera.lookAt({0.0f, 0.0f, -eyes[s]}, {0.0f, 0.0f, 0.0f});
+        scene.camera.setFocalPixels(focals[s]);
+        scene.camera.setCenterPixels(W * 0.5f, H * 0.5f);
+        scene.setRenderMode(m < TD_RENDER_MODE_COUNT ? (TD_RenderMode)m : TD_OUTLINE);
+        scene.setOutlineDepthTest(m == TD_RENDER_MODE_COUNT);
+        CountingTarget t((int16_t)W, (int16_t)H);
+        CHECK(scene.render(t), "sliver %d mode %d: render failed (status %d)", s, m,
+              (int)scene.lastStatus());
+        CHECK(t.oob == 0, "sliver %d mode %d: %ld px out of bounds", s, m, t.oob);
+      }
+    }
+
+    uint32_t seed = 0x2545F491u;  // a stream of its own: the shared one stays as it is
+    auto rnd = [&seed](float lo, float hi) {
+      seed = seed * 1664525u + 1013904223u;
+      return lo + (hi - lo) * ((seed >> 8) & 0xFFFFFF) / 16777216.0f;
+    };
+    const float far[5] = {1e30f, -1e30f, 1e9f, -1e9f, 1e-30f};
+    const float oddSkips[4] = {0.0f, -0.0f, NAN, -INFINITY};
+    TD_BoxMesh boxMesh;
+    TD_SphereMesh sphereMesh(12, 6);
+    TD_PlaneMesh planeMesh(3, 3);
+    long oob = 0, failed = 0;
+    for (int k = 0; k < 2000; ++k) {
+      TD_Scene scene;
+      TD_Object a(boxMesh), b(sphereMesh), c(planeMesh);
+      scene.add(a);
+      scene.add(b);
+      scene.add(c);
+      const float pa[3] = {rnd(-2.0f, 2.0f), rnd(-2.0f, 2.0f), rnd(-2.0f, 2.0f)};
+      a.setPosition(k % 3 == 0 ? far[k % 5] : pa[0], k % 3 == 1 ? far[k % 5] : pa[1],
+                    k % 3 == 2 ? far[k % 5] : pa[2]);
+      a.setRotation(rnd(-9.0f, 9.0f), rnd(-9.0f, 9.0f), rnd(-9.0f, 9.0f));
+      a.setScale(k % 7 == 0 ? far[k % 5] : rnd(-3.0f, 3.0f));
+      b.setPosition(rnd(-1.0f, 1.0f), rnd(-1.0f, 1.0f), rnd(-1.0f, 1.0f));
+      c.setPosition(0.0f, -0.5f, 0.0f);
+      scene.camera.setFov(120.0f);
+      scene.camera.setTarget(0.0f, 0.0f, 0.0f);
+      scene.camera.setDistance(rnd(0.2f, 1.5f));
+      scene.camera.setOrbit(rnd(-3.0f, 3.0f), rnd(-1.0f, 1.0f));
+      scene.camera.setNearSkip(k % 11 == 0 ? oddSkips[k % 4] : rnd(-1.0f, 0.2f));
+      scene.setRenderMode((TD_RenderMode)(k % TD_RENDER_MODE_COUNT));
+      scene.setOutlineDepthTest(k % 2 == 0);
+      CountingTarget t(k % 4 == 0 ? (int16_t)1 : (int16_t)W, k % 4 == 0 ? (int16_t)1 : (int16_t)H);
+      failed += !scene.render(t);
+      oob += t.oob;
+    }
+    CHECK(failed == 0, "near-skip fuzz: %ld frames failed", failed);
+    CHECK(oob == 0, "near-skip fuzz: %ld px out of bounds", oob);
   }
   CHECK(oobCount == 0, "render suite plotted out of bounds %ld times", oobCount);
 

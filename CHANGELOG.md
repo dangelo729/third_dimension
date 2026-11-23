@@ -42,7 +42,7 @@ releases may break API; breaks are called out under a "Breaking" heading.
   through. No memory beyond the outline depth buffer (the same 4 B/pixel); on the host
   the fill span loop runs about a third slower with it. Default off. **No golden pins
   moved** — purely additive: with the test off every path draws exactly as before.
-  Tested in the outline suite (O10a–g): composed passes occlude each other, fill and ink,
+  Tested in the outline suite: composed passes occlude each other, fill and ink,
   where by default the later pass draws over; a coplanar layer lands exactly the
   default's pixels, in a later pass and in one pass, and covers an earlier layer's line
   as by default; a square just behind a steep wall, where screen-linear depth is several
@@ -50,8 +50,8 @@ releases may break API; breaks are called out under a "Breaking" heading.
   over a fill drawn later behind it; the depth clears on `render()`,
   `clearOutlineDepth()`, a clear left pending by an empty pass, and a target resize
   either way, and an empty pass never touches an unsized or smaller buffer; one
-  `render()` draws the pinned K5 frame through the default's exact seam calls and fixes a
-  ground-plane mis-sort; and line groups hold across passes.
+  `render()` draws the pinned barrel frame through the default's exact seam calls and
+  fixes a ground-plane mis-sort; and line groups hold across passes.
 - **Fill-less objects: `TD_Object::setFill(false)`.** The object fills nothing and
   records no depth, in any mode, so it hides nothing; its edges draw as the mode draws
   lines — classified ink under `TD_OUTLINE`, true-edge outlines under `TD_SOLID` and
@@ -66,7 +66,7 @@ releases may break API; breaks are called out under a "Breaking" heading.
   table, so `prebuildOutline` and the prepare stage build it as for any object. Default
   `true`. **No golden pins moved** — purely additive: filled objects and the other modes
   take no new draw records, so every scene without a fill-less object sorts and draws
-  exactly as before. Tested in the outline suite (O6e): a glass box hides none of a
+  exactly as before. Tested in the outline suite: a glass box hides none of a
   sphere inside it; it inks all the filled box inks and the middles of the three edges at
   its far corner, which the filled box hides; a glass sphere inks its contour alone; a
   filled sphere in front of the far corner hides the far edges inside its disc and none
@@ -93,7 +93,7 @@ releases may break API; breaks are called out under a "Breaking" heading.
   built one. The registration survives `releaseBuffers()` and `invalidateOutline()`;
   a table whose counts differ from the mesh's or whose `opp` entries run past its faces
   is refused. `TD_Mesh` and mesh format 1 are untouched. **No golden pins moved** —
-  purely additive. Tested in the outline suite (O8b), including a doctored table that
+  purely additive. Tested in the outline suite, including a doctored table that
   proves the ink pass reads the baked one and a crease change that falls back to the
   build.
 - **Line groups: `TD_Object::setInkGroup(group)`.** Under `TD_OUTLINE`, objects sharing a
@@ -109,7 +109,7 @@ releases may break API; breaks are called out under a "Breaking" heading.
   group of one draws exactly as no group. A frame with a group costs **1 B/pixel** more
   (8 KB at 128×64), allocated in the prepare stage only then and freed by
   `releaseBuffers()`. Default 0, no group. **No golden pins moved** — purely additive, and
-  a frame without a group runs the old path. Tested in the outline suite (O6d): a ball sunk
+  a frame without a group runs the old path. Tested in the outline suite: a ball sunk
   into a bigger one, whose contour and whose rim each ink through by default and not
   grouped; a group of one, dense and coarse, alone and over a box, drawing exactly as no
   group; and an object outside the group inking the same either way.
@@ -120,7 +120,7 @@ releases may break API; breaks are called out under a "Breaking" heading.
   `prebuildOutline` and the prepare stage skip it. For occluders that should hide lines
   without drawing their own — a dark mouth interior behind thin lips, whose rim would
   otherwise ink through within the ink test's one-pixel reach. Default `true`. **No
-  golden pins moved** — purely additive. Tested in the outline suite (O6c), including an
+  golden pins moved** — purely additive. Tested in the outline suite, including an
   inkless object sharing its mesh with an inked one.
 - **Ellipsoid primitive: `TD_EllipsoidMesh(slices, stacks, rx, ry, rz)`.** The
   non-uniform sphere: UV-sphere topology (identical counts and memory to
@@ -205,13 +205,12 @@ releases may break API; breaks are called out under a "Breaking" heading.
   diffusion post-pass); `TD_Color565Target` with per-object color and exact BLACK/WHITE
   palette materials; all 7 procedural primitives through the single-allocation mesh
   builder; and `td_validateMesh`.
-- Golden verification: the bit-exact golden pins (per-method dither tile signatures and
-  full-frame render hashes, taken from the engine the library was ported from) pass
-  unchanged through the library under the tests' fixed camera — the port is
-  pixel-identical. The committed host suite (the acceptance gate) builds at `-O1` with
-  `-ffp-contract=off`; that flag is load-bearing, since FMA contraction shifts last-ulp
-  results and would move the pins.
-- Primitive geometry golden hashes pinned (P8) from the first verified generator build;
+- Golden verification: the host suite pins bit-exact per-method dither tile signatures
+  and full-frame render hashes under the tests' fixed camera, so any change to what the
+  library draws moves a pin. The committed host suite (the acceptance gate) builds at
+  `-O1` with `-ffp-contract=off`; that flag is load-bearing, since FMA contraction shifts
+  last-ulp results and would move the pins.
+- Primitive geometry golden hashes pinned from the first verified generator build;
   one multi-object occlusion threshold recalibrated against the recomputed geometry.
 
 ### Fixed
@@ -226,7 +225,7 @@ releases may break API; breaks are called out under a "Breaking" heading.
   outline depth buffer before any was sized: through a null pointer on a renderer's
   first outline frame, past the end of a buffer sized for a smaller target after that.
   A pass with no visible object now returns before touching any buffer. **No golden
-  pins moved.** Tested in the outline suite (O11), with and without the depth test.
+  pins moved.** Tested in the outline suite, with and without the depth test.
 - The host tests build with `-Werror` again (a `long` printed with `%d` stopped the CI
   build), and `make -C test/host run` builds as CI does: with clang++ (make's default
   compiler had stood in for it) and `-Werror`.

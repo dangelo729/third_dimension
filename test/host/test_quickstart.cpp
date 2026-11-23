@@ -3,8 +3,9 @@
 // README's sketch (examples/SpinningCube) — a cube in a scene with the
 // default camera and light, drawn by scene.render() onto a 128x64 1-bit
 // target — and the calls a sketch reaches for next: the auto-fit and
-// refit(), setOrbit, fitRadius with setTarget, setFov, and scenes composed
-// into one frame with renderPass(). every other suite poses its camera with
+// refit(), setOrbit, fitRadius with setTarget, setFov, scenes composed into
+// one frame with renderPass(), and an outline edge table written by hand
+// from the public header alone. every other suite poses its camera with
 // lookAt and setFocalPixels; this one never does.
 
 #include <cmath>
@@ -271,6 +272,39 @@ void runQuickstartTests() {
     CHECK(litA > 100 && litB > 100 && overlap == 0,
           "the two scenes must draw apart (%ld and %ld px, %ld overlapping)", litA, litB, overlap);
     CHECK(differ == 0, "the composed frame must be the union of the two (%ld px differ)", differ);
+  }
+
+  // ---- F7. a hand-made outline edge table, from the public names alone ----
+  // this file includes no internal header. a 1x1 plane's one quad has four
+  // boundary edges with no face across any: a TD_MeshEdges written with
+  // TD_EDGE_NONE and TD_EDGE_BOUNDARY is taken, and draws exactly the frame
+  // the table the renderer builds draws.
+  {
+    CHECK(TD_EDGE_NONE == 0xFFFF && TD_EDGE_CREASE == 0x01 && TD_EDGE_BOUNDARY == 0x02,
+          "the edge table's names must keep their format-1 values");
+    TD_PlaneMesh planeMesh(1, 1);
+    TD_Object builtPlane(planeMesh), bakedPlane(planeMesh);
+    TD_Scene built, baked;
+    built.add(builtPlane);
+    baked.add(bakedPlane);
+    static const uint16_t opp[4] = {TD_EDGE_NONE, TD_EDGE_NONE, TD_EDGE_NONE, TD_EDGE_NONE};
+    static const uint8_t flags[4] = {TD_EDGE_BOUNDARY, TD_EDGE_BOUNDARY, TD_EDGE_BOUNDARY,
+                                     TD_EDGE_BOUNDARY};
+    const TD_MeshEdges edges = {opp, flags, planeMesh.nverts, planeMesh.nfaces,
+                                planeMesh.faceVertCount, baked.outlineCrease()};
+    CHECK(planeMesh.faceVertCount == 4, "plane(1,1) must have 4 loop slots (%u)",
+          (unsigned)planeMesh.faceVertCount);
+    CHECK(baked.setOutlineEdges(planeMesh, edges), "the hand-made table must be taken");
+    static uint8_t builtFb[QH][QW];
+    for (TD_Scene *s : {&built, &baked}) {
+      s->setRenderMode(TD_OUTLINE);
+      s->camera.setOrbit(0.0f, 0.6f);
+    }
+    renderChecked(built, target);
+    std::memcpy(builtFb, qfb, sizeof qfb);
+    renderChecked(baked, target);
+    CHECK(qStats().count > 50 && std::memcmp(builtFb, qfb, sizeof qfb) == 0,
+          "the hand-made table must draw the built table's frame (%ld px)", qStats().count);
   }
 
   CHECK(qOob == 0, "quick-start suite plotted out of bounds %ld times", qOob);

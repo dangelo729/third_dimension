@@ -19,10 +19,11 @@ jobs:
       - uses: actions/checkout@v4
       - name: Build host tests
         # -ffp-contract=off: the bit-exact golden hashes are pinned without
-        # FMA contraction; contracted builds legitimately differ.
+        # FMA contraction; contracted builds legitimately differ. gfx_stub
+        # holds a stand-in Adafruit_GFX.h for the GFX adapter suite.
         run: |
           clang++ -std=c++17 -O1 -Wall -Wextra -Werror -ffp-contract=off \
-            -Isrc src/*.cpp src/internal/*.cpp test/host/*.cpp \
+            -Isrc -Itest/host/gfx_stub src/*.cpp src/internal/*.cpp test/host/*.cpp \
             -o test/host/td_host_tests
       - name: Run host tests
         run: ./test/host/td_host_tests

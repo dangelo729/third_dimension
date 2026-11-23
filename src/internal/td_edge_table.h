@@ -5,6 +5,7 @@
 #include <stdint.h>
 
 #include "../TD_Mesh.h"
+#include "../TD_MeshEdges.h"
 
 // internal edge-adjacency table — the classifier data behind TD_OUTLINE's
 // feature lines (silhouette / crease / boundary). not part of the public API.
@@ -20,14 +21,9 @@
 //
 // opp[i] is the mesh-local index of the face across slot i's directed edge
 // (TD_EDGE_NONE when no face lies across it); flags[i] carries the
-// classification baked at build time. the table reads flash-resident mesh
-// arrays fine but always lives in RAM.
-
-#define TD_EDGE_NONE 0xFFFF
-
-// flags[] bits
-#define TD_EDGE_CREASE 0x01    // dihedral sharper than the build's crease angle
-#define TD_EDGE_BOUNDARY 0x02  // open-mesh border (or non-manifold extra)
+// classification baked at build time (the TD_EDGE_CREASE and
+// TD_EDGE_BOUNDARY bits, named in TD_MeshEdges.h). the table reads
+// flash-resident mesh arrays fine but always lives in RAM.
 
 struct TD_EdgeTable {
   // section pointers into the block, valid after build() succeeds. opp is

@@ -119,8 +119,10 @@ One `scene.render(target)` call performs, in order:
    adds true-edge outlines at shade 0.0; WIREFRAME draws the polygon loops at
    2.0, as does TD_CEL's white ink. Lines are Bresenham, endpoints clipped
    (Liang–Barsky) to a guard band (±4× the target dimensions, in float space)
-   before integer conversion, then funneled through a per-pixel bounds check —
-   the one place per-pixel checking exists.
+   before integer conversion (an endpoint that float rounding leaves more
+   than a pixel outside the band, on a line longer than about 2^24 px, is
+   held there), then funneled through a per-pixel bounds check — the one
+   place per-pixel checking exists.
 9. **Finish.** `target.endFrame()` — error-diffusion dithers quantize their
    recorded shade field here. `lastDrawCount()` / `lastNearSkipCount()` are
    tallied during culling and drawing above and are final the moment `render()`
