@@ -37,10 +37,11 @@ with no macros to collide on. (The prefix defaults to `mesh`.)
 
 ## From PicoCAD
 
-PicoCAD's OBJ export already matches the library's conventions — right-handed,
-Y-up, counter-clockwise-outward winding — so no flips and no options are
-needed. Export OBJ, not the raw PicoCAD `.txt` format; the converter reads OBJ
-only.
+PicoCAD's OBJ export already matches the library's conventions — Y-up,
+counter-clockwise-outward winding — so no flips and no options are needed.
+A model that is not symmetric is drawn mirrored, as any right-handed tool's
+is (`conventions.md`, R1). Export OBJ, not the raw PicoCAD `.txt` format; the
+converter reads OBJ only.
 
 ```sh
 python3 tools/obj2mesh.py mymodel.obj -o MyModel.h --name mymodel

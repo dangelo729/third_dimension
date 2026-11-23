@@ -33,7 +33,9 @@ What it does:
      multiple models coexist in one sketch).
 
 Orientation: PicoCAD's OBJ export is already a conventional right-handed, Y-up,
-CCW-outward mesh — no axis flips are applied or needed. (The raw PicoCAD v1
+CCW-outward mesh — no axis flips are applied. The library draws +Z into the
+scene, so a right-handed model appears mirrored left for right
+(extras/docs/conventions.md, R1). (The raw PicoCAD v1
 .txt format needs an X/Y flip; this tool does not handle that format.)
 
 Per-face PicoCAD colour (`c=`) does not survive the OBJ path, so no

@@ -5,20 +5,31 @@ culling, lighting, the golden test suite — assumes exactly these. Each rule
 ends with what breaks if you assume otherwise, because that is how convention
 bugs present.
 
-## R1 — World and model space are right-handed, +Y up
+## R1 — World and model space: +X right, +Y up, +Z into the scene
 
-+X right, +Y up, +Z into the scene — so the front of a front-facing model
-faces −Z, toward the default camera. PicoCAD's OBJ export arrives in this
-orientation directly; no axis flips happen in the import path or the engine.
+That is a left-handed space. The front of a front-facing model faces −Z,
+toward the default camera. PicoCAD's OBJ export arrives in this orientation
+directly; no axis flips happen in the import path or the engine, and a
+model's numbers are drawn as they are.
+
+Most modelling tools are right-handed (+Z toward the viewer when +X is right
+and +Y is up), so a model exported from one is drawn as in a mirror, left
+for right. The other rules name turning directions the way those tools do,
+in a right-handed reading of the same numbers: R2's counter-clockwise
+winding and R5's counter-clockwise rotations both run clockwise as drawn.
 
 *If you assume otherwise:* Z-up assets (default Blender scenes) come in
 lying on their face — rotate them in the exporter (Y up, −Z forward), not
-in code. A left-handed assumption mirrors the model and silently flips its
-winding, which turns into rule R2's failure mode.
+in code. A model that is not symmetric (lettering, a left hand) comes out
+mirrored: mirror it in the tool before exporting and recalculate its
+normals outward, since negating one axis alone also reverses the winding,
+which turns into rule R2's failure mode.
 
 ## R2 — Front faces wind counter-clockwise seen from outside
 
-CCW-outward winding, which for a closed mesh means positive signed volume.
+CCW-outward winding, which for a closed mesh means positive signed volume:
+counter-clockwise in R1's right-handed reading, which is how an OBJ exporter
+writes a face. On the screen a front face runs clockwise.
 The OBJ converter (`tools/obj2mesh.py`) checks signed volume and warns when
 it is negative, pointing to the escape hatch `renderer.setCullSign(-1.0f)`,
 which flips the cull test at runtime for clockwise-wound meshes.
@@ -55,9 +66,12 @@ the exporter.
 ## R5 — Rotations are right-handed; object euler order is v' = Rx·Ry·Rz·v
 
 Positive angles rotate counter-clockwise looking down the axis from its
-positive end. `TD_Object::setRotation(rx, ry, rz)` applies **Z (roll)
-first, then Y (yaw — the turntable spin), then X (pitch)**. This order is
-an API commitment: it will not change, and animation code may rely on it.
+positive end, in R1's right-handed reading; as drawn that is clockwise, and
+from the default camera, which looks along +Z, a positive `rz` turns +X
+toward +Y, counter-clockwise on the screen.
+`TD_Object::setRotation(rx, ry, rz)` applies **Z (roll) first, then Y (yaw
+— the turntable spin), then X (pitch)**. This order is an API commitment:
+it will not change, and animation code may rely on it.
 Angles are radians everywhere — rotations, orbit, light direction, the
 outline crease — except the camera's field of view: `TD_Camera::setFov`
 (and `focalForFovY`) take degrees. Arduino's `radians()` converts.

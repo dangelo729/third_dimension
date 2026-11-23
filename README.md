@@ -46,7 +46,9 @@ This is `examples/SpinningCube`. The camera frames the scene at its first render
 light shines from the upper left, so nothing more is needed. The main calls:
 
 - **Meshes:** `TD_BoxMesh`, `TD_SphereMesh`, `TD_EllipsoidMesh`, `TD_CylinderMesh`, `TD_ConeMesh`,
-  `TD_PrismMesh`, `TD_TorusMesh`, `TD_PlaneMesh`, or a header made by `tools/obj2mesh.py`.
+  `TD_PrismMesh`, `TD_TorusMesh`, `TD_PlaneMesh`, or a header made by `tools/obj2mesh.py`. A
+  built-in shape that could not be built (no memory, a size of zero) draws nothing, and its
+  `valid()` is false.
 - **Objects:** `setPosition(x, y, z)`, `setRotation(rx, ry, rz)`, `setScale(s)`, `setColor(rgb565)`,
   `setMaterial(TD_MATERIAL_WHITE)`, `setVisible(false)`; `scene.add(obj)`, `scene.remove(obj)`.
 - **Camera and light:** `scene.camera.setOrbit(azimuth, elevation)`, `setTarget(x, y, z)` and
