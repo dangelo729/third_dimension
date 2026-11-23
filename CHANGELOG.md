@@ -9,6 +9,31 @@ least a MINOR bump (with an entry here explaining why the pins moved), and any c
 the `TD_Mesh` layout is a new mesh format number plus a MAJOR bump. During 0.x, MINOR
 releases may break API; breaks are called out under a "Breaking" heading.
 
+## [0.3.0] - 2026-11-23
+
+### Added
+
+- **The edge kinds, `TD_EDGE_NONE`, `TD_EDGE_CREASE` and `TD_EDGE_BOUNDARY`, in
+  `TD_MeshEdges.h`**: what a `TD_MeshEdges` table written by hand is written with.
+
+### Changed
+
+- **`lookAt()` alone draws from inside a scene.** With the eye inside the scene's bounds
+  the camera takes a 60 degree vertical field of view; it used to fail with
+  `TD_ERR_BAD_CAMERA` until a field of view was set.
+- **`tools/obj2mesh.py` and the editor take a mesh up to the library's own limit**,
+  65,535 triangles; they used to stop at 21,845.
+
+### Fixed
+
+- **`TD_GFXMonoTarget` follows its display's size.** A `setRotation()` lands in the next
+  frame and a display sized in `begin()` renders; it used to draw out of bounds for a
+  frame, overrun the Floyd buffers, or never render.
+- **Copying or assigning a `TD_Object` leaves scene membership alone.** Assigning to an
+  object in a scene used to drop every object after it.
+- **A line with an endpoint very far off the target is clipped safely**, and its frame
+  always returns.
+
 ## [0.2.0] - 2026-11-23
 
 ### Added

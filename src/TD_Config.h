@@ -6,7 +6,7 @@
 // handshake, and tuning constants. every other header includes this first.
 
 #define THIRDDIMENSION_VERSION_MAJOR 0
-#define THIRDDIMENSION_VERSION_MINOR 2
+#define THIRDDIMENSION_VERSION_MINOR 3
 #define THIRDDIMENSION_VERSION_PATCH 0
 
 // the mesh header format this library reads. generated model headers
