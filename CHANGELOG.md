@@ -9,7 +9,7 @@ least a MINOR bump (with an entry here explaining why the pins moved), and any c
 the `TD_Mesh` layout is a new mesh format number plus a MAJOR bump. During 0.x, MINOR
 releases may break API; breaks are called out under a "Breaking" heading.
 
-## [Unreleased]
+## [0.2.0] - 2026-11-23
 
 ### Added
 
@@ -216,6 +216,12 @@ releases may break API; breaks are called out under a "Breaking" heading.
 
 ### Fixed
 
+- **`conventions.md` R1 said right-handed** and described +X right, +Y up, +Z into the
+  scene, which is left-handed. It says left-handed, and that a right-handed tool's model
+  is drawn mirrored; R2 and R5 say their counter-clockwise is in the right-handed
+  reading and runs clockwise as drawn. `asset-pipeline.md` and `obj2mesh.py`'s notes
+  follow, and the README says a built-in shape that could not be built draws nothing.
+  Nothing the library draws changed.
 - A `TD_OUTLINE` frame with nothing to draw (every object hidden, or none) wrote the
   outline depth buffer before any was sized: through a null pointer on a renderer's
   first outline frame, past the end of a buffer sized for a smaller target after that.
